@@ -3,21 +3,20 @@ import sys
 import time
 import ctypes
 import inspect
+import threading
 from datetime import datetime, timedelta
 
-VERSION = '1.1.4 - 10.06.2026'
+VERSION = '1.1.5 - 13.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("Warframe Log Observer")
 
+
+_stdout_lock = threading.Lock()
+
 DEBUG = False
-LOG = False
 
 APPDATA = os.getenv("LOCALAPPDATA")
 LOG_FILE_PATH = os.path.join(APPDATA, "Warframe", "EE.log") if APPDATA else "EE.log"
 
-CLEAR_SCREEN = "\033[2J"
-CURSOR_HOME = "\033[H"
-SAVE_CURSOR = "\033[s"
-RESTORE_CURSOR = "\033[u"
 CLEAR_LINE = "\033[K"
 
 BOLD_RED = "\033[1;38;5;210m"
@@ -35,9 +34,6 @@ NORMAL_YELLOW = "\033[0;38;5;222m"
 BOLD_ORANGE = "\033[1;38;2;249;158;54m"
 NORMAL_ORANGE = "\033[0;38;2;249;158;54m"
 
-BOLD_MAGENTA = "\033[1;38;2;255;0;255m"
-NORMAL_MAGENTA = "\033[0;38;2;255;0;255m"
-
 BOLD_BLUE = "\033[1;38;5;117m"
 NORMAL_BLUE = "\033[0;38;5;117m"
 
@@ -49,10 +45,12 @@ RESET = "\033[0m"
 INITIAL_OFFSET = None
 LOG_START_DT = None
 
+MIN_WIDTH = 102
+MIN_HEIGHT = 20
+
+
 last_zone_entered = None
 initial_log_scan = True
-
-last_height = 0
 
 global_stats = {
     "player_name": "Unknown",
@@ -76,7 +74,6 @@ current_match = {
     "downs": 0,
     "highest_hit": 0.0,
     "start_time": 0.0,
-    "end_time": 0.0,
     "nemesis_spawn_time": None,
     "nemesis_kill_time": None,
     "nemesis_killed_match": 0,
@@ -86,15 +83,34 @@ current_match = {
 
 
 
-
-
 def startup():
-    print(f'\n\nWarframe Log Observer --- © {BOLD_ORANGE}steak_de{RESET} / contact@ennithing.de / Version: {VERSION}')
-    print('\nPlease be aware that this script is intended for solo mode.\nWhile it works with other players aswell, it is not fully tested and bugs are expected.\nOn top of that, the logs vary in detail with more players.\n')
-    print(f'\nOverview: {BOLD_D_GREEN}Zone Damage Record{RESET} - {BOLD_GREEN}Session Damage Record{RESET} - {BOLD_YELLOW}Downed Recorded{RESET} - {BOLD_RED}Player Death Recorded{RESET}')
-    print('\nHint: Warframe only logs exceptionally high damage numbers. Lower Damage Threshold is around 20\nMillion Damage to a single Enemy. Everything below that threshold goes unnoticed.\nSeeing higher ingame numbers than recorded? Might have been a terrain object.\nMaybe you annihilated a flower pot with that 200M crit. Poor Thing...')
-    print('\n')
-    print('Do not resize this window.\n\n')
+    print_scroll_text(f"""
+Warframe Log Observer --- © {BOLD_ORANGE}steak_de{RESET} / contact@ennithing.de / Version: {VERSION}
+
+Please be aware that this script is intended for solo mode.
+While it works with other players aswell, it is not fully tested and bugs are expected.
+On top of that, the logs vary in detail with more players, with a tendency to display less info.
+
+EE.log gets updated in bulk. If a lot is happening at the same time, it takes a couple seconds
+for Warframe to print new log lines into the log. This results in a feeling of slow readings
+sometimes.
+
+When reading a previous log session, times are being reconstructed through timestamps within 
+the log itself. This results in slightly different times (1-2 seconds offset) in hindsight.
+
+Hint: Warframe only logs exceptionally high damage numbers. Lower Damage Threshold is around 20
+Million Damage to a single Enemy. Everything below that threshold goes unnoticed.
+Seeing higher ingame numbers than recorded? Might have been a terrain object.
+Maybe you annihilated a flower pot with that 200M crit. Poor Thing...
+
+
+Legend: {BOLD_D_GREEN}Zone Damage Record{RESET} - {BOLD_GREEN}Session Damage Record{RESET} - {BOLD_YELLOW}Downed Recorded{RESET} - {BOLD_RED}Death Recorded{RESET}
+
+
+Resizing this window might result in line cabbage. It is recommended to keep it at default.
+ 
+ 
+""")
 
 
 def parse_start_time(start_time):
@@ -164,16 +180,11 @@ def debugprint(print_text: str = None):
         func_name = caller_frame.f_code.co_name
         line_no = caller_frame.f_lineno
         fehlerquelle = f"[{func_name}:L{line_no}]: "
-        
         print(f"{NORMAL_ORANGE}# {fehlerquelle}{print_text}{RESET}")
-        
-    if LOG:
-        pass
 
 
 def reconstruct_event_time(line: str) -> str:
     global LOG_START_DT, INITIAL_OFFSET
-    
     try:
         relative_seconds = float(line.split(maxsplit=1)[0])
         if INITIAL_OFFSET is not None:
@@ -185,7 +196,6 @@ def reconstruct_event_time(line: str) -> str:
             base_datetime = datetime.strptime(base_datetime, "%Y-%m-%d %H:%M:%S")
         event_time = base_datetime + timedelta(seconds=corrected_seconds)
         return event_time.strftime("%H:%M:%S")
-        
     except (ValueError, IndexError):
         if isinstance(LOG_START_DT, str):
             return LOG_START_DT.split()[-1]
@@ -218,18 +228,16 @@ def parse_warframe_name(line):
         sub_path = parts[1].strip()
         sub_parts = sub_path.split("/")
         raw_name = sub_parts[-1]
-        
         if not raw_name or " " in raw_name:
             return None
-
         if "ChildOperator" in raw_name:
             return "Operator"
-            
         if "Prime" in raw_name and not raw_name.startswith("Prime"):
             base = raw_name.replace("Prime", "")
             return f"{base} Prime"
         return raw_name
     return "Unknown"
+
 
 def start_match_if_needed():
     if current_match["active"]:
@@ -257,74 +265,110 @@ def start_match_if_needed():
 # {line1_content} #
 # {line2_content} #"""
 
+
     print_scroll_text(header)
+def get_terminal_width():
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        return 120
+
 
 def get_terminal_height():
     try:
         return os.get_terminal_size().lines
     except OSError:
         return 30
+last_height = get_terminal_height()
+
 
 def setup_terminal():
     global last_height
-    
     current_height = get_terminal_height()
-    
-    if current_height == last_height:
-        return
-        
-    last_height = current_height
-    
     sys.stdout.write("\033[2J")
     sys.stdout.write("\033[H")
-    
     scroll_end = max(1, current_height - 8)
     sys.stdout.write(f"\033[1;{scroll_end}r")
     sys.stdout.write("\033[H")
     sys.stdout.flush()
 
 
+def _resize_watcher():
+    global last_height
+    last_width = get_terminal_width()
+    while True:
+        try:
+            size = os.get_terminal_size()
+            new_height = size.lines
+            new_width = size.columns
+        except OSError:
+            time.sleep(0.5)
+            continue
+        too_small = new_width < MIN_WIDTH or new_height < MIN_HEIGHT
+        if too_small:
+            with _stdout_lock:
+                sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write(f"  Terminal zu klein!\n")
+                sys.stdout.write(f"  Mindestgröße: {MIN_WIDTH}x{MIN_HEIGHT}\n")
+                sys.stdout.write(f"  Aktuell: {new_width}x{new_height}\n")
+                sys.stdout.flush()
+            time.sleep(0.5)
+            continue
+        if new_height != last_height or new_width != last_width:
+            last_height = new_height
+            last_width = new_width
+            scroll_end = max(1, new_height - 8)
+            with _stdout_lock:
+                sys.stdout.write(f"\033[1;{scroll_end}r")
+                sys.stdout.flush()
+            update_dashboard()
+        time.sleep(0.5)
+
+
 def update_dashboard():
-    sys.stdout.write(SAVE_CURSOR)
-    height = get_terminal_height()
-    start_row = max(1, height - 7)
-    p_name = global_stats["player_name"]
-    wf = global_stats["warframe"]
-    m_rec = str(global_stats["matches"])
-    d_rec = str(global_stats["deaths"])
-    p_rec = str(global_stats["downs"])
-    n_err = str(global_stats["neg_err"])
-    h_err = str(global_stats["high_err"])
-    h_wrn = str(global_stats["warn"])
-    hi_hit = global_stats["highest_hit_peak"]
-    hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
-    dmg_record_text = f"Session Damage Peak: {NORMAL_GREEN}{hi_hit_str}{RESET}"
-    if global_stats['highest_hit_peak_time'] != None:
-        dmg_record_text = dmg_record_text + f" @{global_stats['highest_hit_peak_time']}"
+    with _stdout_lock:
+        height = get_terminal_height()
+        start_row = max(1, height - 7)
+        p_name = global_stats["player_name"]
+        wf = global_stats["warframe"]
+        m_rec = str(global_stats["matches"])
+        d_rec = str(global_stats["deaths"])
+        p_rec = str(global_stats["downs"])
+        n_err = str(global_stats["neg_err"])
+        h_err = str(global_stats["high_err"])
+        h_wrn = str(global_stats["warn"])
+        hi_hit = global_stats["highest_hit_peak"]
+        hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
+        dmg_record_text = f"Session Damage Peak: {NORMAL_GREEN}{hi_hit_str}{RESET}"
+        if global_stats['highest_hit_peak_time'] != None:
+            dmg_record_text = dmg_record_text + f" @{global_stats['highest_hit_peak_time']}"
+        if not global_stats['nemesis_kill_record'] == None:
+            minutes = int(global_stats['nemesis_kill_record'] // 60)
+            seconds = int(global_stats['nemesis_kill_record'] % 60)
+            milliseconds = int((global_stats['nemesis_kill_record'] % 1) * 100000)
+            time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:05d}"
+            nemesis_record_text = time_str
+        else:
+            nemesis_record_text = 'No Session Record'
+        sys.stdout.write(f"\033[{start_row};1H" + f"╔═════════════╦═════════════════════╦══════════════════════╦════════════════════════════════════╗{CLEAR_LINE}")
+        sys.stdout.write(f"\033[{start_row+1};1H" + f"║ Player Name ║ {NORMAL_ORANGE}{p_name:<20}{RESET}║ Zones Recorded:  {m_rec:<4}║ Negative Damage Errors: {n_err:<11}║{CLEAR_LINE}")
+        sys.stdout.write(f"\033[{start_row+2};1H" + f"╠═════════════╬═════════════════════╣ Deaths Recorded: {d_rec:<4}║ Dmg too high Warnings:  {h_err:<11}║{CLEAR_LINE}")
+        sys.stdout.write(f"\033[{start_row+3};1H" + f"║ Warframe    ║ {wf:<20}║ Downed Recorded: {p_rec:<4}║ High Dmg Warnings:      {h_wrn:<11}║{CLEAR_LINE}")
+        sys.stdout.write(f"\033[{start_row+4};1H" + f"╠═════════════╩═════════════════════╩═══════════╦══════════╩════════════════════════════════════╣{CLEAR_LINE}")
+        sys.stdout.write(f"\033[{start_row+5};1H" + f"║ {dmg_record_text[:62]:<62} ║ Fastest Nemesis Kill: {NORMAL_BLUE}{nemesis_record_text:<23}{RESET} ║{CLEAR_LINE}")
+        sys.stdout.write(f"\033[{start_row+6};1H" + f"╚═══════════════════════════════════════════════╩═══════════════════════════════════════════════╝{CLEAR_LINE}")
+        sys.stdout.flush()
 
-    if not global_stats['nemesis_kill_record'] == None:
-        minutes = int(global_stats['nemesis_kill_record'] // 60)
-        seconds = int(global_stats['nemesis_kill_record'] % 60)
-        milliseconds = int((global_stats['nemesis_kill_record'] % 1) * 100000)
-        time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:05d}"
-        nemesis_record_text = time_str
-    else:
-        nemesis_record_text = 'No Session Record'
-
-    sys.stdout.write(f"\033[{start_row};1H" + f"╔═════════════╦═════════════════════╦══════════════════════╦════════════════════════════════════╗{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+1};1H" + f"║ Player Name ║ {NORMAL_ORANGE}{p_name:<20}{RESET}║ Zones Recorded:  {m_rec:<4}║ Negative Damage Errors: {n_err:<11}║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+2};1H" + f"╠═════════════╬═════════════════════╣ Deaths Recorded: {d_rec:<4}║ Dmg too high Warnings:  {h_err:<11}║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+3};1H" + f"║ Warframe    ║ {wf:<20}║ Downed Recorded: {p_rec:<4}║ High Dmg Warnings:      {h_wrn:<11}║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+4};1H" + f"╠═════════════╩═════════════════════╩═══════════╦══════════╩════════════════════════════════════╣{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+5};1H" + f"║ {dmg_record_text[:62]:<62} ║ Fastest Nemesis Kill: {NORMAL_BLUE}{nemesis_record_text:<23}{RESET} ║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+6};1H" + f"╚═══════════════════════════════════════════════╩═══════════════════════════════════════════════╝{CLEAR_LINE}")
-    sys.stdout.write(RESTORE_CURSOR)
-    sys.stdout.flush()
 
 def print_scroll_text(text):
-    for line in text.strip("\n").split("\n"):
-        print(line)
-    sys.stdout.flush()
+    with _stdout_lock:
+        height = get_terminal_height()
+        scroll_end = max(1, height - 8)
+        lines = text.strip("\n").split("\n")
+        for line in lines:
+            sys.stdout.write(f"\033[{scroll_end};1H\033[2K{line}\n")
+        sys.stdout.flush()
+
 
 def generate_zone_summary(line: str):
     hi_hit = current_match["highest_hit"]
@@ -344,27 +388,24 @@ def generate_zone_summary(line: str):
         current_seconds = float(line.split(maxsplit=1)[0])
         start_seconds = last_zone_entered if last_zone_entered is not None else current_seconds
         elapsed_seconds = int(current_seconds - start_seconds)
-
     hours = elapsed_seconds // 3600
     minutes = (elapsed_seconds % 3600) // 60
     seconds = elapsed_seconds % 60
-    
     if hours > 0:
         duration_str = f"{hours}h {minutes}m {seconds}s"
     else:
         duration_str = f"{minutes}m {seconds}s"
-    
     title_content = "Zone Summary:".center(93)
     duration_content = f"Zone left @ {timestamp}    Duration: {duration_str}".center(93)
-    
     summary = f"""#                                                                                               #
-# {title_content} #
+# {NORMAL_ORANGE}{title_content}{RESET} #
+#                                                                                               #
 # {duration_content} #
 #                                                                                               #
 #       {NORMAL_RED}Deaths: {current_match['deaths']:<3}{RESET} {NORMAL_YELLOW}Downed: {current_match['downs']:<3}{RESET} {NORMAL_D_BLUE}Nemesis killed: {current_match['nemesis_killed_match']:<3}{RESET} {NORMAL_D_GREEN}Highest Damage Warning: {hi_hit_str:<19}{RESET} #
 #                                                                                               #
 #################################################################################################
-
+ 
 """
     return summary
 
@@ -372,48 +413,37 @@ def generate_zone_summary(line: str):
 def process_line(line):
     global current_match, INITIAL_OFFSET, LOG_START_DT, last_zone_entered
     now_str = datetime.now().strftime("%H:%M:%S")
-    line_timecode = 0.0
     line = line.rstrip()
-    
-    try:
-        line_timecode = line.split(maxsplit=1)[0]
-    except IndexError as e:
-        debugprint(str(str(e) + ', line: "' + line + '"'))
-    
-
-    # 0. SPIELSTART AUFZEICHNEN
+# 0. SPIELSTART AUFZEICHNEN
     if 'Sys [Diag]: Current time: ' in line:
         log_start_time = line.split('Sys [Diag]: Current time: ')
         parse_start_time(log_start_time)
         debugprint('Startzeit gelesen: ' + str(log_start_time) + str(' aus line: ') + str(line))
         
 
-    # 1. SPIELERNAME ERKENNEN
+# 1. SPIELERNAME ERKENNEN
     if "Sys [Info]: Logged in " in line:
         parts = line.split("Sys [Info]: Logged in ")
         if len(parts) > 1:
             raw_name_part = parts[1].strip()
             if "(" in raw_name_part:
                 raw_name_part = raw_name_part.split("(")[0].strip()
-                
             global_stats["player_name"] = clean_player_name(raw_name_part)
             debugprint('Spielername gelesen: ' + str(clean_player_name(raw_name_part)) + str(' aus line: ') + str(line))
-
             update_dashboard()
         return
 
-    # 2. WARFRAME ERKENNEN
+# 2. WARFRAME ERKENNEN
     if "Game [Info]: /Lotus/Powersuits/" in line and current_match['warframe_recognized'] == False:
         detected_frame = parse_warframe_name(line)
         debugprint('Warframe gelesen: ' + str(detected_frame) + str(' aus line: ') + str(line))
-
         if detected_frame:
             global_stats["warframe"] = detected_frame
             current_match['warframe_recognized'] = True
             update_dashboard()
         return
 
-    # 3. NEUES MATCH ODER PASSIVE ZONE (LOBBY) ERKENNEN
+# 3. NEUES MATCH ODER PASSIVE ZONE (LOBBY) ERKENNEN
     if "Sys [Info]: ===[ Game successfully connected to:" in line:
         lobby_keywords = [
             "/Orbiter/",
@@ -424,19 +454,16 @@ def process_line(line):
             "/IronWake/",
             "/TNWDrifterCampMain/"
         ]
-        
         is_lobby = any(keyword in line for keyword in lobby_keywords)
         if current_match["active"]:
             summary = generate_zone_summary(line)
             print_scroll_text(summary)
             current_match["active"] = False
         debugprint('Neue Verbindung erkannt. is_lobby=' + str(is_lobby))
-
         if is_lobby:
-
             return
 
-        # 3. WENN KEINE LOBBY: KAMPFZONE STARTEN
+# 3.1. WENN KEINE LOBBY: KAMPFZONE STARTEN
         global_stats["matches"] += 1
         current_match["id"] = global_stats["matches"]
         current_match["active"] = True
@@ -453,13 +480,9 @@ def process_line(line):
         timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
         debugprint('Neue Matchaufzeichnung begonnen. line: ' + str(line))
         debugprint('timestamp: ' + str(timestamp))
-
-
-
         line1_content = f"Zone {current_match['id']}".center(93)
         line2_content = str('Zone entered @ ' + str(timestamp) + ' (in a previous session)').center(93) if initial_log_scan else str('Zone entered @ ' + str(timestamp)).center(93)
         last_zone_entered = float(str(line).split(maxsplit=1)[0])
-
         header = f"""
 #################################################################################################
 # {line1_content} #
@@ -483,26 +506,29 @@ def process_line(line):
                 now_str = datetime.now().strftime("%H:%M:%S")
                 val_str = f"{val:,.0f}".replace(",", ".")
                 timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
+                output = ""
                 if val > current_match["highest_hit"]:
-                    debugprint('Matchrekord durch "high dmg": ' + str(val) + ' ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
+                    debugprint('Matchrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
                     current_match["highest_hit"] = val
-                    zone_highscore_box = f"""{NORMAL_D_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
+                    output += f"""{NORMAL_D_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
 # │  {BOLD_D_GREEN}ZONE HIGHSCORE{NORMAL_D_GREEN}  │ {timestamp:<8} │ New Zone Damage Peak: {val_str:<37} │ #
 # └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-                    print_scroll_text(zone_highscore_box)
                 if val > global_stats["highest_hit_peak"]:
-                    debugprint('Sessionrekord durch "high dmg": ' + str(val) + ' ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
+                    debugprint('Sessionrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(global_stats['highest_hit_peak']) + '\n# Line: ' + str(line))
                     global_stats["highest_hit_peak"] = val
                     global_stats["highest_hit_peak_time"] = datetime.now().strftime("%H:%M:%S")
-                    highscore_box = f"""{NORMAL_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
-# │    {BOLD_GREEN}HIGHSCORE!{NORMAL_GREEN}    │ {timestamp:<8} │ New Session Damage Peak: {val_str:<34} │ #
+                    if output:
+                        output += "\n"
+                    output += f"""{NORMAL_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
+# │  {BOLD_GREEN}SESSION RECORD{NORMAL_GREEN}  │ {timestamp:<8} │ New Session Damage Peak: {val_str:<34} │ #
 # └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-                    print_scroll_text(highscore_box)
+                if output:
+                    print_scroll_text(output)
         except Exception as e:
             debugprint('Fehler in "high dmg:"-Event: ' + str(e))
-            
         update_dashboard()
         return
+
 
     if "Game [Warning]:" in line and "Damage too high:" in line:
         start_match_if_needed()
@@ -511,28 +537,29 @@ def process_line(line):
             parts = line.split("Damage too high:")
             if len(parts) > 1:
                 val = format_damage_value(parts[1])
-                
                 now_str = datetime.now().strftime("%H:%M:%S")
                 val_str = f"{val:,.0f}".replace(",", ".")
                 timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
+                output = ""
                 if val > current_match["highest_hit"]:
                     debugprint('Matchrekord durch "Damage too high": ' + str(val) + ' ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
                     current_match["highest_hit"] = val
-                    zone_highscore_box = f"""{NORMAL_D_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
+                    output += f"""{NORMAL_D_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
 # │  {BOLD_D_GREEN}ZONE HIGHSCORE{NORMAL_D_GREEN}  │ {timestamp:<8} │ New Zone Damage Peak: {val_str:<37} │ #
 # └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-                    print_scroll_text(zone_highscore_box)
                 if val > global_stats["highest_hit_peak"]:
-                    debugprint('Matchrekord durch "Damage too high": ' + str(val) + ' ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
+                    debugprint('Sessionrekord durch "Damage too high": ' + str(val) + ' ersetzt alten Wert: ' + str(global_stats['highest_hit_peak']) + '\n# Line: ' + str(line))
                     global_stats["highest_hit_peak"] = val
                     global_stats["highest_hit_peak_time"] = datetime.now().strftime("%H:%M:%S")
-                    highscore_box = f"""{NORMAL_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
-# │    {BOLD_GREEN}HIGHSCORE!{NORMAL_GREEN}    │ {timestamp:<8} │ New Session Damage Peak: {val_str:<34} │ #
+                    if output:
+                        output += "\n"
+                    output += f"""{NORMAL_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
+# │  {BOLD_GREEN}SESSION RECORD{NORMAL_GREEN}  │ {timestamp:<8} │ New Session Damage Peak: {val_str:<34} │ #
 # └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-                    print_scroll_text(highscore_box)
+                if output:
+                    print_scroll_text(output)
         except Exception as e:
             debugprint('Fehler in "Damage too high:"-Event: ' + str(e))
-
         update_dashboard()
         return
 
@@ -545,13 +572,10 @@ def process_line(line):
         update_dashboard()
         enemy, level, dmg_inflicted, weapon = "Unknown", "---", "---", "Unknown" 
         debugprint('Downed-Event\n# Line: ' + str(line))
-        
         try:
             content = line.split("Game [Info]:")[1].strip()
             rest = content.split("was downed by")[1].strip()
-            
             dmg_inflicted = rest.split("damage")[0].strip()
-            
             if "from" not in rest and 'using' not in rest:
                 enemy = "Suicide - e.g. Martyr Symbiosis"
                 level = "---"
@@ -565,20 +589,17 @@ def process_line(line):
                     rest2 = rest.split("damage from a level")[1].strip() if 'a level' in str(rest) else rest.split('damage from')[1].strip() if not 'damage from a' in str(rest) else rest.split('damage from a')[1].strip()
                 except IndexError:
                     rest2 = None
-
                 if not rest2 == None:
                     try:
                         level = rest2.split()[0].strip() if rest2.split()[0].isnumeric() == True else '----'
                     except IndexError:
                         level = None
-
                 enemy_and_weapon = None
                 if not rest2 == None:
                     try:
                         enemy_and_weapon = rest2.replace(level if level != 'Unknown' and level != None else 'Unknown', "", 1).strip()
                     except IndexError:
                         enemy_and_weapon = None
-
                 if not enemy_and_weapon == None:
                     try:
                         enemy = enemy_and_weapon.split("using a")[0].strip()
@@ -588,7 +609,6 @@ def process_line(line):
                         weapon = enemy_and_weapon.split("using a")[1].strip()
                     except IndexError:
                         weapon = 'Unknown'
-            
             subject = content.split()[0].strip()
             subject_part_two = None
             if 'Kavat' in content.split()[1].strip() or 'Kubrow' in content.split()[1].strip() or 'Vulpaphyla' in content.split()[1].strip() or 'Sentinel' in content.split()[1].strip():
@@ -606,17 +626,16 @@ def process_line(line):
 # ├────────┴───────────────────┴──────────────┬──────────────────────────────┴────────────────┤ #
 # │ Damage Inflicted: {dmg_inflicted[:23]:<23} │ Damage Source: {weapon[:30]:<30} │ #
 # └───────────────────────────────────────────┴───────────────────────────────────────────────┘ #{RESET}"""
-        
         print_scroll_text(box)
         return
 
+    #6. TOT (KILLED)
     if "Game [Info]:" in line and "was killed by" in line:
         debugprint('Killed-Event\n# Line: ' + str(line))
         start_match_if_needed()
         if not initial_log_scan: global_stats["deaths"] += 1
         current_match["deaths"] += 1
         update_dashboard()
-        
         try:
             content = line.split("Game [Info]:")[1].strip()
             subject = content.split()[0].strip()
@@ -627,7 +646,6 @@ def process_line(line):
                     subject_part_two = content.split()[1].strip()
                 except Exception as e:
                     debugprint('# Error bei downed event\n# Line: ' + str(line) + '\n# ' + str(e))
-            
             subject_full = subject + ' ' + subject_part_two if subject_part_two != None else subject
             rest = content.split("was killed by")[1].strip()
             dmg_inflicted = rest.split("damage from a level")[0].strip() if 'a level' in str(rest) else rest.split('damage from')[0].strip() 
@@ -651,8 +669,6 @@ def process_line(line):
         except Exception as e:
             debugprint('# Error bei killed event\n# Line: ' + str(line) + '\n# ' + str(e))
             enemy, level, dmg_inflicted, weapon, subject_full = "Unknown", "----", "----", "Unknown", "Unknown"
-
-
         timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
         box = f"""{NORMAL_RED}# ┌────────┬───────────────────┬─────────── {BOLD_RED}{timestamp}{NORMAL_RED} ────────────────────────┬────────────────┐ #
 # │{BOLD_RED} KILLED {NORMAL_RED}│{BOLD_RED} {subject_full[:17].center(16):<17} {NORMAL_RED}│ Enemy: {enemy[:36]:<36} │ Level: {level[:7]:<7} │ #
@@ -667,17 +683,14 @@ def process_line(line):
         debugprint('# Nemesis gespawnt.\n# line: ' + str(line))
         start_match_if_needed()
         current_match["nemesis_spawn_time"] = float(line.split(maxsplit=1)[0])
-        
         return
 
     if "persistent enemy" in line and "was killed" in line:
         debugprint('# Nemesis gestorben.\n# line: ' + str(line))
         start_match_if_needed()
-
         current_match["nemesis_kill_time"] = float(line.split(maxsplit=1)[0])
         if not initial_log_scan: global_stats["nemesis_killed_session"] += 1
         current_match["nemesis_killed_match"] += 1
-
         now_str = datetime.now().strftime("%H:%M:%S")
         timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
         kill_time = None
@@ -688,47 +701,40 @@ def process_line(line):
         minutes = int(kill_time // 60)
         seconds = int(kill_time % 60)
         milliseconds = int((kill_time % 1) * 1000)
-
         time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
-        
         match_record = current_match["nemesis_kill_record_match"]
+        session_record = global_stats["nemesis_kill_record"]
+        match_record_cmp = match_record if match_record is not None else float('inf')
+        session_record_cmp = session_record if session_record is not None else float('inf')
+        new_match_best = kill_time < match_record_cmp
+        new_session_best = kill_time < session_record_cmp
         if match_record is None or kill_time < match_record:
             current_match["nemesis_kill_record_match"] = kill_time
-        
-        session_record = global_stats["nemesis_kill_record"]
         if session_record is None or kill_time < session_record:
             global_stats["nemesis_kill_record"] = kill_time
-        
         cval = current_match['nemesis_kill_record_match']
         current_match_record = f"{int(cval // 60):02d}:{int(cval % 60):02d}.{int((cval % 1) * 1000):03d}" if cval != None else 'No Record'[:9]
         sval = global_stats['nemesis_kill_record']
         session_record_str = f"{int(sval // 60):02d}:{int(sval % 60):02d}.{int((sval % 1) * 1000):03d}" if sval != None else 'No Record'[:9]
-        kill_message = f"""
-# ┌──────────────────┬──────────┬─────────────────────────┬───────────┬───────────┬───────────┐ #
+        if new_match_best and new_session_best:
+            kill_message = f"""# ┌──────────────────┬──────────┬─────────────────────────┬─ {BOLD_D_BLUE}RECORD!{RESET} ─┬─ {BOLD_BLUE}RECORD!{RESET} ─┬───────────┐ #
 # │   NEMESIS KILL   │ {timestamp[:8]:<8} │ Killed in: {time_str[:12]:<12} │ {NORMAL_D_BLUE}{current_match_record[:9]:<9}{RESET} │ {NORMAL_BLUE}{session_record_str[:9]:<9}{RESET} │ {str(current_match['nemesis_killed_match'])[:3]:<3} {'Kills' if  int(current_match['nemesis_killed_match']) != 1 else 'Kill '} │ #
 # └──────────────────┴──────────┴─────────────────────────┴───────────┴───────────┴───────────┘ #"""
+        elif new_match_best:
+            kill_message = f"""# ┌──────────────────┬──────────┬─────────────────────────┬─ {BOLD_D_BLUE}RECORD!{RESET} ─┬───────────┬───────────┐ #
+# │   NEMESIS KILL   │ {timestamp[:8]:<8} │ Killed in: {time_str[:12]:<12} │ {NORMAL_D_BLUE}{current_match_record[:9]:<9}{RESET} │ {NORMAL_BLUE}{session_record_str[:9]:<9}{RESET} │ {str(current_match['nemesis_killed_match'])[:3]:<3} {'Kills' if  int(current_match['nemesis_killed_match']) != 1 else 'Kill '} │ #
+# └──────────────────┴──────────┴─────────────────────────┴───────────┴───────────┴───────────┘ #"""
+        elif new_session_best:
+            kill_message = f"""# ┌──────────────────┬──────────┬─────────────────────────┬───────────┬─ {BOLD_BLUE}RECORD!{RESET} ─┬───────────┐ #
+# │   NEMESIS KILL   │ {timestamp[:8]:<8} │ Killed in: {time_str[:12]:<12} │ {NORMAL_D_BLUE}{current_match_record[:9]:<9}{RESET} │ {NORMAL_BLUE}{session_record_str[:9]:<9}{RESET} │ {str(current_match['nemesis_killed_match'])[:3]:<3} {'Kills' if  int(current_match['nemesis_killed_match']) != 1 else 'Kill '} │ #
+# └──────────────────┴──────────┴─────────────────────────┴───────────┴───────────┴───────────┘ #"""
+        else:
+            kill_message = f"""# ┌──────────────────┬──────────┬─────────────────────────┬───────────┬───────────┬───────────┐ #
+# │   NEMESIS KILL   │ {timestamp[:8]:<8} │ Killed in: {time_str[:12]:<12} │ {NORMAL_D_BLUE}{current_match_record[:9]:<9}{RESET} │ {NORMAL_BLUE}{session_record_str[:9]:<9}{RESET} │ {str(current_match['nemesis_killed_match'])[:3]:<3} {'Kills' if  int(current_match['nemesis_killed_match']) != 1 else 'Kill '} │ #
+# └──────────────────┴──────────┴─────────────────────────┴───────────┴───────────┴───────────┘ #"""
+
         print_scroll_text(kill_message)
-
-        if match_record is None or kill_time < match_record:
-            debugprint('# Nemesis Kill Match Rekord\n# ' + str(kill_time) + ' ersetzt alte Zeit: ' + str(match_record))
-            box_match = f"""
-{NORMAL_D_BLUE}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
-# │  {BOLD_D_BLUE}NEMESIS RECORD {NORMAL_D_BLUE} │ {timestamp[:8]:<8} │ New Match Record: {time_str[:41]:<41} │ #
-# └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-            if not time_str == '00:0.000' or time_str == '  ----  ':
-                print_scroll_text(box_match)
-
-        if session_record is None or kill_time < session_record:
-            debugprint('# Nemesis Kill Session Rekord\n# ' + str(kill_time) + ' ersetzt alte Zeit: ' + str(match_record))
-            box_session = f"""
-{NORMAL_BLUE}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
-# │  {BOLD_BLUE}NEMESIS RECORD {NORMAL_BLUE} │ {timestamp[:8]:<8} │ New Session Record: {time_str[:39]:<39} │ #
-# └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-            if not time_str == '00:0.000' or time_str == '  ----  ':
-                print_scroll_text(box_session)
-
         current_match["nemesis_spawn_time"] = None
-
         update_dashboard()
         return
 
@@ -767,8 +773,6 @@ def watch_log():
                         "utf-8",
                         errors="ignore"
                     )
-                    
-
                     process_line(line)
                     continue
                 if initial_log_scan:
@@ -798,24 +802,21 @@ def cleanup_terminal():
     sys.stdout.write("\033[r")
     sys.stdout.flush()
 
+
 if __name__ == "__main__":
     setup_terminal()
     update_dashboard()
     startup()
-
+    watcher = threading.Thread(target=_resize_watcher, daemon=True)
+    watcher.start()
     try:
         watch_log()
-
     except Exception as e:
         import traceback
-
         cleanup_terminal()
-
         print("\nUNHANDLED EXCEPTION\n")
         traceback.print_exc()
-
         input("\nPress ENTER to exit...")
-
     except KeyboardInterrupt:
         pass
 
