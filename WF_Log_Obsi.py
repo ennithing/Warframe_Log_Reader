@@ -3,14 +3,10 @@ import sys
 import time
 import ctypes
 import inspect
-import threading
 from datetime import datetime, timedelta
 
 VERSION = '1.1.5 - 13.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("Warframe Log Observer")
-
-
-_stdout_lock = threading.Lock()
 
 DEBUG = False
 
@@ -119,7 +115,6 @@ def parse_start_time(start_time):
     content = []
     for _ in explosion:
         content.append(str(_).replace("'", '').replace(",",'').replace('[','').replace(']', ''))
-
     time_offset = content[0]
     INITIAL_OFFSET = time_offset
     weekday = content[2]
@@ -163,15 +158,9 @@ def parse_start_time(start_time):
                            'Sun': 'Sunday'}
 
     start_time_string = f'{weekday_translation[weekday]}, {day}.{month_translation[month]}.{year} - {clock}'
-
     uniform_time_str = f'{year}-{month_translation[month]}-{day} {clock}'
     LOG_START_DT = uniform_time_str    
-
-
     return start_time_string, time_offset
-# Friday, 05.06.2026 - 23:09:45 ◄ start_time_string
-# 2026-06-05 23:09:45           ◄ uniform_time_str
-# 2026-06-07 11:30:29.289916    ◄ datetime.now()
 
 
 def debugprint(print_text: str = None):
@@ -244,7 +233,6 @@ def start_match_if_needed():
         return
     debugprint('Neues Match gestartet!')
     global_stats["matches"] += 1
-
     current_match["id"] = global_stats["matches"]
     current_match["active"] = True
     current_match["deaths"] = 0
@@ -254,19 +242,16 @@ def start_match_if_needed():
     current_match["nemesis_killed_match"] = 0
     current_match["nemesis_kill_record_match"] = None
     update_dashboard()
-
     now_str = datetime.now().strftime("Entered: %H:%M:%S")
-
     line1_content = f"Zone {current_match['id']}".center(93)
     line2_content = (now_str if not initial_log_scan else '  ----  ' + " (Activity Trigger)").center(93)
-
     header = f"""
 #################################################################################################
 # {line1_content} #
 # {line2_content} #"""
-
-
     print_scroll_text(header)
+
+
 def get_terminal_width():
     try:
         return os.get_terminal_size().columns
@@ -279,11 +264,9 @@ def get_terminal_height():
         return os.get_terminal_size().lines
     except OSError:
         return 30
-last_height = get_terminal_height()
 
 
 def setup_terminal():
-    global last_height
     current_height = get_terminal_height()
     sys.stdout.write("\033[2J")
     sys.stdout.write("\033[H")
@@ -293,81 +276,47 @@ def setup_terminal():
     sys.stdout.flush()
 
 
-def _resize_watcher():
-    global last_height
-    last_width = get_terminal_width()
-    while True:
-        try:
-            size = os.get_terminal_size()
-            new_height = size.lines
-            new_width = size.columns
-        except OSError:
-            time.sleep(0.5)
-            continue
-        too_small = new_width < MIN_WIDTH or new_height < MIN_HEIGHT
-        if too_small:
-            with _stdout_lock:
-                sys.stdout.write("\033[2J\033[H")
-                sys.stdout.write(f"  Terminal zu klein!\n")
-                sys.stdout.write(f"  Mindestgröße: {MIN_WIDTH}x{MIN_HEIGHT}\n")
-                sys.stdout.write(f"  Aktuell: {new_width}x{new_height}\n")
-                sys.stdout.flush()
-            time.sleep(0.5)
-            continue
-        if new_height != last_height or new_width != last_width:
-            last_height = new_height
-            last_width = new_width
-            scroll_end = max(1, new_height - 8)
-            with _stdout_lock:
-                sys.stdout.write(f"\033[1;{scroll_end}r")
-                sys.stdout.flush()
-            update_dashboard()
-        time.sleep(0.5)
-
-
 def update_dashboard():
-    with _stdout_lock:
-        height = get_terminal_height()
-        start_row = max(1, height - 7)
-        p_name = global_stats["player_name"]
-        wf = global_stats["warframe"]
-        m_rec = str(global_stats["matches"])
-        d_rec = str(global_stats["deaths"])
-        p_rec = str(global_stats["downs"])
-        n_err = str(global_stats["neg_err"])
-        h_err = str(global_stats["high_err"])
-        h_wrn = str(global_stats["warn"])
-        hi_hit = global_stats["highest_hit_peak"]
-        hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
-        dmg_record_text = f"Session Damage Peak: {NORMAL_GREEN}{hi_hit_str}{RESET}"
-        if global_stats['highest_hit_peak_time'] != None:
-            dmg_record_text = dmg_record_text + f" @{global_stats['highest_hit_peak_time']}"
-        if not global_stats['nemesis_kill_record'] == None:
-            minutes = int(global_stats['nemesis_kill_record'] // 60)
-            seconds = int(global_stats['nemesis_kill_record'] % 60)
-            milliseconds = int((global_stats['nemesis_kill_record'] % 1) * 100000)
-            time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:05d}"
-            nemesis_record_text = time_str
-        else:
-            nemesis_record_text = 'No Session Record'
-        sys.stdout.write(f"\033[{start_row};1H" + f"╔═════════════╦═════════════════════╦══════════════════════╦════════════════════════════════════╗{CLEAR_LINE}")
-        sys.stdout.write(f"\033[{start_row+1};1H" + f"║ Player Name ║ {NORMAL_ORANGE}{p_name:<20}{RESET}║ Zones Recorded:  {m_rec:<4}║ Negative Damage Errors: {n_err:<11}║{CLEAR_LINE}")
-        sys.stdout.write(f"\033[{start_row+2};1H" + f"╠═════════════╬═════════════════════╣ Deaths Recorded: {d_rec:<4}║ Dmg too high Warnings:  {h_err:<11}║{CLEAR_LINE}")
-        sys.stdout.write(f"\033[{start_row+3};1H" + f"║ Warframe    ║ {wf:<20}║ Downed Recorded: {p_rec:<4}║ High Dmg Warnings:      {h_wrn:<11}║{CLEAR_LINE}")
-        sys.stdout.write(f"\033[{start_row+4};1H" + f"╠═════════════╩═════════════════════╩═══════════╦══════════╩════════════════════════════════════╣{CLEAR_LINE}")
-        sys.stdout.write(f"\033[{start_row+5};1H" + f"║ {dmg_record_text[:62]:<62} ║ Fastest Nemesis Kill: {NORMAL_BLUE}{nemesis_record_text:<23}{RESET} ║{CLEAR_LINE}")
-        sys.stdout.write(f"\033[{start_row+6};1H" + f"╚═══════════════════════════════════════════════╩═══════════════════════════════════════════════╝{CLEAR_LINE}")
-        sys.stdout.flush()
+    height = get_terminal_height()
+    start_row = max(1, height - 7)
+    p_name = global_stats["player_name"]
+    wf = global_stats["warframe"]
+    m_rec = str(global_stats["matches"])
+    d_rec = str(global_stats["deaths"])
+    p_rec = str(global_stats["downs"])
+    n_err = str(global_stats["neg_err"])
+    h_err = str(global_stats["high_err"])
+    h_wrn = str(global_stats["warn"])
+    hi_hit = global_stats["highest_hit_peak"]
+    hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
+    dmg_record_text = f"Session Damage Peak: {NORMAL_GREEN}{hi_hit_str}{RESET}"
+    if global_stats['highest_hit_peak_time'] != None:
+        dmg_record_text = dmg_record_text + f" @{global_stats['highest_hit_peak_time']}"
+    if not global_stats['nemesis_kill_record'] == None:
+        minutes = int(global_stats['nemesis_kill_record'] // 60)
+        seconds = int(global_stats['nemesis_kill_record'] % 60)
+        milliseconds = int((global_stats['nemesis_kill_record'] % 1) * 100000)
+        time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:05d}"
+        nemesis_record_text = time_str
+    else:
+        nemesis_record_text = 'No Session Record'
+    sys.stdout.write(f"\033[{start_row};1H" + f"╔═════════════╦═════════════════════╦══════════════════════╦════════════════════════════════════╗{CLEAR_LINE}")
+    sys.stdout.write(f"\033[{start_row+1};1H" + f"║ Player Name ║ {NORMAL_ORANGE}{p_name:<20}{RESET}║ Zones Recorded:  {m_rec:<4}║ Negative Damage Errors: {n_err:<11}║{CLEAR_LINE}")
+    sys.stdout.write(f"\033[{start_row+2};1H" + f"╠═════════════╬═════════════════════╣ Deaths Recorded: {d_rec:<4}║ Dmg too high Warnings:  {h_err:<11}║{CLEAR_LINE}")
+    sys.stdout.write(f"\033[{start_row+3};1H" + f"║ Warframe    ║ {wf:<20}║ Downed Recorded: {p_rec:<4}║ High Dmg Warnings:      {h_wrn:<11}║{CLEAR_LINE}")
+    sys.stdout.write(f"\033[{start_row+4};1H" + f"╠═════════════╩═════════════════════╩═══════════╦══════════╩════════════════════════════════════╣{CLEAR_LINE}")
+    sys.stdout.write(f"\033[{start_row+5};1H" + f"║ {dmg_record_text[:62]:<62} ║ Fastest Nemesis Kill: {NORMAL_BLUE}{nemesis_record_text:<23}{RESET} ║{CLEAR_LINE}")
+    sys.stdout.write(f"\033[{start_row+6};1H" + f"╚═══════════════════════════════════════════════╩═══════════════════════════════════════════════╝{CLEAR_LINE}")
+    sys.stdout.flush()
 
 
 def print_scroll_text(text):
-    with _stdout_lock:
-        height = get_terminal_height()
-        scroll_end = max(1, height - 8)
-        lines = text.strip("\n").split("\n")
-        for line in lines:
-            sys.stdout.write(f"\033[{scroll_end};1H\033[2K{line}\n")
-        sys.stdout.flush()
+    height = get_terminal_height()
+    scroll_end = max(1, height - 8)
+    lines = text.strip("\n").split("\n")
+    for line in lines:
+        sys.stdout.write(f"\033[{scroll_end};1H\033[2K{line}\n")
+    sys.stdout.flush()
 
 
 def generate_zone_summary(line: str):
@@ -433,6 +382,7 @@ def process_line(line):
             update_dashboard()
         return
 
+
 # 2. WARFRAME ERKENNEN
     if "Game [Info]: /Lotus/Powersuits/" in line and current_match['warframe_recognized'] == False:
         detected_frame = parse_warframe_name(line)
@@ -442,6 +392,7 @@ def process_line(line):
             current_match['warframe_recognized'] = True
             update_dashboard()
         return
+
 
 # 3. NEUES MATCH ODER PASSIVE ZONE (LOBBY) ERKENNEN
     if "Sys [Info]: ===[ Game successfully connected to:" in line:
@@ -462,6 +413,7 @@ def process_line(line):
         debugprint('Neue Verbindung erkannt. is_lobby=' + str(is_lobby))
         if is_lobby:
             return
+
 
 # 3.1. WENN KEINE LOBBY: KAMPFZONE STARTEN
         global_stats["matches"] += 1
@@ -629,6 +581,7 @@ def process_line(line):
         print_scroll_text(box)
         return
 
+
     #6. TOT (KILLED)
     if "Game [Info]:" in line and "was killed by" in line:
         debugprint('Killed-Event\n# Line: ' + str(line))
@@ -677,6 +630,7 @@ def process_line(line):
 # └───────────────────────────────────────────┴───────────────────────────────────────────────┘ #{RESET}"""
         print_scroll_text(box)
         return
+
 
     # 7. NEMESIS EVENTS
     if "persistent enemy" in line and "spawned" in line:
@@ -758,7 +712,6 @@ def watch_log():
         except OSError:
             time.sleep(1)
             continue
-
         now_str = datetime.now().strftime("%H:%M:%S")
         with f:
             print_scroll_text(
@@ -807,8 +760,6 @@ if __name__ == "__main__":
     setup_terminal()
     update_dashboard()
     startup()
-    watcher = threading.Thread(target=_resize_watcher, daemon=True)
-    watcher.start()
     try:
         watch_log()
     except Exception as e:
@@ -819,6 +770,5 @@ if __name__ == "__main__":
         input("\nPress ENTER to exit...")
     except KeyboardInterrupt:
         pass
-
     finally:
         cleanup_terminal()
