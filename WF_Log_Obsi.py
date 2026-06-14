@@ -5,7 +5,7 @@ import ctypes
 import inspect
 from datetime import datetime, timedelta
 
-VERSION = '1.1.5 - 13.06.2026'
+VERSION = '1.1.6 - 14.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("Warframe Log Observer")
 
 DEBUG = False
@@ -70,11 +70,15 @@ current_match = {
     "downs": 0,
     "highest_hit": 0.0,
     "start_time": 0.0,
+    "mission_name": None,
     "nemesis_spawn_time": None,
     "nemesis_kill_time": None,
     "nemesis_killed_match": 0,
     "nemesis_kill_record_match": None,
-    "warframe_recognized": False
+    "warframe_recognized": False,
+    "pending_start": False,
+    "pending_line": None,
+    "mission_success": None,
 }
 
 
@@ -228,10 +232,17 @@ def parse_warframe_name(line):
     return "Unknown"
 
 
-def start_match_if_needed():
+def start_match(line=None, mission_name=None):
     if current_match["active"]:
         return
     debugprint('Neues Match gestartet!')
+    global last_zone_entered
+    if current_match["active"]:
+        return
+    # Wenn noch ein pending hängt, den aufräumen
+    current_match["pending_start"] = False
+    current_match["pending_line"] = None
+
     global_stats["matches"] += 1
     current_match["id"] = global_stats["matches"]
     current_match["active"] = True
@@ -241,14 +252,34 @@ def start_match_if_needed():
     current_match["start_time"] = time.time()
     current_match["nemesis_killed_match"] = 0
     current_match["nemesis_kill_record_match"] = None
+    current_match["nemesis_spawn_time"] = None
+    current_match["nemesis_kill_time"] = None
+
+    if line is not None:
+        timestamp = reconstruct_event_time(line) if initial_log_scan else datetime.now().strftime("%H:%M:%S")
+        last_zone_entered = float(str(line).split(maxsplit=1)[0])
+    else:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
     update_dashboard()
-    now_str = datetime.now().strftime("Entered: %H:%M:%S")
+
     line1_content = f"Zone {current_match['id']}".center(93)
-    line2_content = (now_str if not initial_log_scan else '  ----  ' + " (Activity Trigger)").center(93)
-    header = f"""
+    if line is None:
+        line2_content = (f"Entered: {timestamp}" if not initial_log_scan else "  ----   (Activity Trigger)").center(93)
+        header = f"""
 #################################################################################################
 # {line1_content} #
 # {line2_content} #"""
+    else:
+        line2_content = str('Zone entered @ ' + timestamp + (' (in a previous session)' if initial_log_scan else '')).center(93)
+        mission_line = (f"Mission: {mission_name}" if mission_name else ' ').center(93)
+        header = f"""
+#################################################################################################
+# {line1_content} #
+# {line2_content} #
+# {mission_line} #
+# {" ".center(93)} #"""
+
     print_scroll_text(header)
 
 
@@ -393,17 +424,20 @@ def process_line(line):
             update_dashboard()
         return
 
+# 2.1 MISSION NAME ERKENNEN → aufgeschobenen Start ausführen
+    if "Script [Info]: MissionIntro.lua: MissionName:" in line:
+        current_match["mission_name"] = line.split("MissionName:")[-1].strip()
+        if current_match.get("pending_start"):
+            current_match["pending_start"] = False
+            start_match(line=current_match["pending_line"], mission_name=current_match["mission_name"])
+            current_match["pending_line"] = None
+        return
 
 # 3. NEUES MATCH ODER PASSIVE ZONE (LOBBY) ERKENNEN
     if "Sys [Info]: ===[ Game successfully connected to:" in line:
         lobby_keywords = [
-            "/Orbiter/",
-            "/Dojo/",
-            "/CampMain/",
-            "/Hub/",
-            "/Town/",
-            "/IronWake/",
-            "/TNWDrifterCampMain/"
+            "/Orbiter/", "/Dojo/", "/CampMain/", "/Hub/",
+            "/Town/", "/IronWake/", "/TNWDrifterCampMain/"
         ]
         is_lobby = any(keyword in line for keyword in lobby_keywords)
         if current_match["active"]:
@@ -412,41 +446,19 @@ def process_line(line):
             current_match["active"] = False
         debugprint('Neue Verbindung erkannt. is_lobby=' + str(is_lobby))
         if is_lobby:
+            current_match["pending_start"] = False
+            current_match["pending_line"] = None
             return
-
-
-# 3.1. WENN KEINE LOBBY: KAMPFZONE STARTEN
-        global_stats["matches"] += 1
-        current_match["id"] = global_stats["matches"]
-        current_match["active"] = True
-        current_match['nemesis_killed_match'] = 0
-        current_match["deaths"] = 0
-        current_match["downs"] = 0
-        current_match["highest_hit"] = 0.0
-        current_match["start_time"] = time.time()
-        current_match["nemesis_spawn_time"] = None
-        current_match["nemesis_kill_time"] = None
-        current_match['nemesis_kill_record_match'] = None
-        update_dashboard()
-        now_str = datetime.now().strftime("%H:%M:%S")
-        timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
-        debugprint('Neue Matchaufzeichnung begonnen. line: ' + str(line))
-        debugprint('timestamp: ' + str(timestamp))
-        line1_content = f"Zone {current_match['id']}".center(93)
-        line2_content = str('Zone entered @ ' + str(timestamp) + ' (in a previous session)').center(93) if initial_log_scan else str('Zone entered @ ' + str(timestamp)).center(93)
-        last_zone_entered = float(str(line).split(maxsplit=1)[0])
-        header = f"""
-#################################################################################################
-# {line1_content} #
-# {line2_content} #
-# {' '.center(93)} #"""
-        print_scroll_text(header)
+        # Kampfzone: Start aufgeschoben bis MissionName bekannt
+        current_match["pending_start"] = True
+        current_match["pending_line"] = line
+        current_match["mission_name"] = None
         return
 
 
     # 4. SCHADENS-REKORDE & FEHLER-COUNTER
     if "Game [Warning]:  high dmg:" in line:
-        start_match_if_needed()
+        start_match()
         if not initial_log_scan: global_stats["warn"] += 1
         try:
             parts = line.split("high dmg:")
@@ -483,7 +495,7 @@ def process_line(line):
 
 
     if "Game [Warning]:" in line and "Damage too high:" in line:
-        start_match_if_needed()
+        start_match()
         if not initial_log_scan: global_stats["high_err"] += 1
         try:
             parts = line.split("Damage too high:")
@@ -518,7 +530,7 @@ def process_line(line):
 
     # 5. KAMPFUNFÄHIG (DOWNED)
     if "Game [Info]:" in line and "was downed by" in line:
-        start_match_if_needed()
+        start_match()
         if not initial_log_scan: global_stats["downs"] += 1
         current_match["downs"] += 1
         update_dashboard()
@@ -585,7 +597,7 @@ def process_line(line):
     #6. TOT (KILLED)
     if "Game [Info]:" in line and "was killed by" in line:
         debugprint('Killed-Event\n# Line: ' + str(line))
-        start_match_if_needed()
+        start_match()
         if not initial_log_scan: global_stats["deaths"] += 1
         current_match["deaths"] += 1
         update_dashboard()
@@ -635,13 +647,13 @@ def process_line(line):
     # 7. NEMESIS EVENTS
     if "persistent enemy" in line and "spawned" in line:
         debugprint('# Nemesis gespawnt.\n# line: ' + str(line))
-        start_match_if_needed()
+        start_match()
         current_match["nemesis_spawn_time"] = float(line.split(maxsplit=1)[0])
         return
 
     if "persistent enemy" in line and "was killed" in line:
         debugprint('# Nemesis gestorben.\n# line: ' + str(line))
-        start_match_if_needed()
+        start_match()
         current_match["nemesis_kill_time"] = float(line.split(maxsplit=1)[0])
         if not initial_log_scan: global_stats["nemesis_killed_session"] += 1
         current_match["nemesis_killed_match"] += 1
@@ -691,7 +703,6 @@ def process_line(line):
         current_match["nemesis_spawn_time"] = None
         update_dashboard()
         return
-
 
     # 99. MATCH-ENDE (Zusätzliche Absicherung über alternative Logzeilen)
     if "CommitInventoryChangesToDB" in line or "SetSquadMissionResult" in line:
