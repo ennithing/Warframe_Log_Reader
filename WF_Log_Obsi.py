@@ -3,10 +3,14 @@ import sys
 import time
 import ctypes
 import inspect
+import threading
+import re
+import tkinter as tk
+from tkinter import font as tkfont
 from datetime import datetime, timedelta
 
-VERSION = '1.1.6 - 14.06.2026'
-ctypes.windll.kernel32.SetConsoleTitleW("Warframe Log Observer")
+VERSION = '1.1.7 - 15.06.2026'
+ctypes.windll.kernel32.SetConsoleTitleW("   Warframe Log Observer " + str(VERSION))
 
 DEBUG = False
 
@@ -15,28 +19,62 @@ LOG_FILE_PATH = os.path.join(APPDATA, "Warframe", "EE.log") if APPDATA else "EE.
 
 CLEAR_LINE = "\033[K"
 
-BOLD_RED = "\033[1;38;5;210m"
-NORMAL_RED = "\033[0;38;5;210m"
 
-BOLD_GREEN = "\033[1;38;5;121m"
+# ── Farben ────────────────────────────────────────────────────────────────────
+# ANSI-Codes werden beim Einfügen in das Tkinter-Widget geparst und in Tags
+# umgewandelt. Die Namen bleiben identisch damit der restliche Code unverändert
+# bleibt.
+
+BOLD_RED     = "\033[1;38;5;210m"
+NORMAL_RED   = "\033[0;38;5;210m"
+
+BOLD_GREEN   = "\033[1;38;5;121m"
 NORMAL_GREEN = "\033[0;38;5;121m"
 
-BOLD_D_GREEN = "\033[1;38;5;71m"
+BOLD_D_GREEN   = "\033[1;38;5;71m"
 NORMAL_D_GREEN = "\033[0;38;5;71m"
 
-BOLD_YELLOW = "\033[1;38;5;222m"
+BOLD_YELLOW   = "\033[1;38;5;222m"
 NORMAL_YELLOW = "\033[0;38;5;222m"
 
-BOLD_ORANGE = "\033[1;38;2;249;158;54m"
+BOLD_ORANGE   = "\033[1;38;2;249;158;54m"
 NORMAL_ORANGE = "\033[0;38;2;249;158;54m"
 
-BOLD_BLUE = "\033[1;38;5;117m"
+BOLD_BLUE   = "\033[1;38;5;117m"
 NORMAL_BLUE = "\033[0;38;5;117m"
 
-BOLD_D_BLUE = "\033[1;38;5;67m"
+BOLD_D_BLUE   = "\033[1;38;5;67m"
 NORMAL_D_BLUE = "\033[0;38;5;67m"
 
 RESET = "\033[0m"
+
+# ANSI-256 Farbtabelle (nur die hier genutzten Indizes)
+_ANSI_256 = {
+    67:  "#5f87af",
+    71:  "#5faf5f",
+    117: "#87d7ff",
+    121: "#87ffaf",
+    210: "#ff8787",
+    222: "#ffd787",
+}
+
+# RGB-ANSI → Hex
+_ANSI_RGB_COLORS = {
+    "249;158;54": "#f99e36",
+}
+
+def _ansi_to_hex(ansi_code: str):
+    """Gibt den Hex-Farbwert für einen ANSI-Escape zurück, oder None."""
+    m256 = re.search(r'38;5;(\d+)', ansi_code)
+    if m256:
+        idx = int(m256.group(1))
+        return _ANSI_256.get(idx)
+    mrgb = re.search(r'38;2;(\d+;\d+;\d+)', ansi_code)
+    if mrgb:
+        return _ANSI_RGB_COLORS.get(mrgb.group(1))
+    return None
+
+_COLOR_TAGS = {}
 
 INITIAL_OFFSET = None
 LOG_START_DT = None
@@ -44,6 +82,15 @@ LOG_START_DT = None
 MIN_WIDTH = 102
 MIN_HEIGHT = 20
 
+class COORD(ctypes.Structure):
+    _fields_ = [("X", ctypes.c_short),
+                ("Y", ctypes.c_short)]
+
+class SMALL_RECT(ctypes.Structure):
+    _fields_ = [("Left",   ctypes.c_short),
+                ("Top",    ctypes.c_short),
+                ("Right",  ctypes.c_short),
+                ("Bottom", ctypes.c_short)]
 
 last_zone_entered = None
 initial_log_scan = True
@@ -81,6 +128,244 @@ current_match = {
     "mission_success": None,
 }
 
+root        = None
+log_widget  = None
+dash_labels = {}
+
+_drag_x = 0
+_drag_y = 0
+
+MIN_WIDTH_PX  = 900
+MIN_HEIGHT_PX = 560
+
+PALETTE = {
+    "bg":           "#0e0e0e",
+    "bg_title":     "#1a1a1a",
+    "bg_dash":      "#111111",
+    "fg":           "#d0d0d0",
+    "fg_dim":       "#555555",
+    "accent":       "#2a2a2a",
+    "title_text":   "#cccccc",
+    "btn_close":    "#c0392b",
+    "btn_min":      "#888888",
+    "font_ui":      ("Segoe UI", 9),
+    "font_mono":    ("Cascadia Mono", 10),
+    "font_mono_fb": ("Consolas", 10),
+}
+
+
+def _get_mono_font():
+    available = tkfont.families()
+    name = PALETTE["font_mono"][0] if PALETTE["font_mono"][0] in available else PALETTE["font_mono_fb"][0]
+    return (name, PALETTE["font_mono"][1])
+
+
+def _register_color_tags(widget):
+    global _COLOR_TAGS
+    all_codes = [
+        BOLD_RED, NORMAL_RED, BOLD_GREEN, NORMAL_GREEN,
+        BOLD_D_GREEN, NORMAL_D_GREEN, BOLD_YELLOW, NORMAL_YELLOW,
+        BOLD_ORANGE, NORMAL_ORANGE, BOLD_BLUE, NORMAL_BLUE,
+        BOLD_D_BLUE, NORMAL_D_BLUE,
+    ]
+    mono = _get_mono_font()
+    for code in all_codes:
+        hex_color = _ansi_to_hex(code)
+        if not hex_color:
+            continue
+        is_bold = code.startswith("\033[1;")
+        tag = f"ansi_{id(code)}"
+        widget.tag_configure(tag,
+                             foreground=hex_color,
+                             font=(mono[0], mono[1], "bold" if is_bold else "normal"))
+        _COLOR_TAGS[code] = tag
+
+
+def _insert_ansi(widget, text):
+    """Zerlegt ANSI-gefärbten Text und fügt ihn mit Tkinter-Tags ein.
+    Unterstützt direkt aufeinanderfolgende Farbcodes ohne zwischengeschaltetes RESET."""
+    pattern = re.compile(r'(\033\[[^m]*m)')
+    parts = pattern.split(text)
+    current_tag = None
+    for part in parts:
+        if not part:
+            continue
+        if pattern.match(part):
+            if part == RESET or part == "\033[0m":
+                current_tag = None
+            else:
+                new_tag = _COLOR_TAGS.get(part)
+                if new_tag is not None:
+                    current_tag = new_tag
+        else:
+            if current_tag:
+                widget.insert(tk.END, part, current_tag)
+            else:
+                widget.insert(tk.END, part)
+
+
+def build_ui():
+    global root, log_widget, dash_labels
+
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.configure(bg=PALETTE["bg"])
+    root.minsize(MIN_WIDTH_PX, MIN_HEIGHT_PX)
+
+    try:
+        if getattr(sys, 'frozen', False):
+            _base = sys._MEIPASS
+        else:
+            _base = os.path.dirname(os.path.abspath(__file__))
+        _icon_path = os.path.join(_base, "icon.ico")
+        if os.path.exists(_icon_path):
+            root.iconbitmap(_icon_path)
+            _helper = tk.Toplevel(root)
+            _helper.iconbitmap(_icon_path)
+            _helper.withdraw()
+            root.transient(_helper)
+            root.deiconify()
+    except Exception:
+        pass
+
+    root.update_idletasks()
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    w, h = 870, 680
+    root.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+    title_bar = tk.Frame(root, bg=PALETTE["bg_title"], height=32)
+    title_bar.pack(fill=tk.X, side=tk.TOP)
+    title_bar.pack_propagate(False)
+
+    tk.Label(title_bar, text="  Warframe Log Observer " + str(VERSION),
+             bg=PALETTE["bg_title"], fg=PALETTE["title_text"],
+             font=PALETTE["font_ui"], anchor="w"
+             ).pack(side=tk.LEFT, padx=(4, 0))
+
+    tk.Button(title_bar, text="✕", command=root.destroy,
+              bg=PALETTE["bg_title"], fg=PALETTE["btn_close"],
+              activebackground=PALETTE["btn_close"], activeforeground="#fff",
+              relief=tk.FLAT, bd=0, padx=10, pady=4,
+              font=PALETTE["font_ui"], cursor="hand2"
+              ).pack(side=tk.RIGHT)
+
+    tk.Button(title_bar, text="─", command=root.iconify,
+              bg=PALETTE["bg_title"], fg=PALETTE["btn_min"],
+              activebackground=PALETTE["accent"], activeforeground="#fff",
+              relief=tk.FLAT, bd=0, padx=10, pady=4,
+              font=PALETTE["font_ui"], cursor="hand2"
+              ).pack(side=tk.RIGHT)
+
+    def _start_drag(e):
+        global _drag_x, _drag_y
+        _drag_x, _drag_y = e.x, e.y
+
+    def _do_drag(e):
+        root.geometry(f"+{root.winfo_x()+e.x-_drag_x}+{root.winfo_y()+e.y-_drag_y}")
+
+    title_bar.bind("<ButtonPress-1>", _start_drag)
+    title_bar.bind("<B1-Motion>",     _do_drag)
+
+    resize_bar = tk.Frame(root, bg=PALETTE["bg_title"], height=6, cursor="sb_v_double_arrow")
+    resize_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+    def _start_resize(e):
+        resize_bar._start_y = e.y_root
+        resize_bar._start_h = root.winfo_height()
+
+    def _do_resize(e):
+        delta = e.y_root - resize_bar._start_y
+        nh = max(MIN_HEIGHT_PX, resize_bar._start_h + delta)
+        root.geometry(f"{root.winfo_width()}x{nh}")
+
+    resize_bar.bind("<ButtonPress-1>", _start_resize)
+    resize_bar.bind("<B1-Motion>",     _do_resize)
+
+    mono = _get_mono_font()
+
+    log_frame = tk.Frame(root, bg=PALETTE["bg"])
+    log_frame.pack(fill=tk.BOTH, expand=True)
+
+    log_scroll = tk.Scrollbar(log_frame, bg=PALETTE["accent"],
+                               troughcolor=PALETTE["bg"],
+                               relief=tk.FLAT, bd=0, width=8)
+    log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    log_widget = tk.Text(log_frame,
+                         bg=PALETTE["bg"], fg=PALETTE["fg"],
+                         insertbackground=PALETTE["fg"],
+                         font=mono,
+                         relief=tk.FLAT, bd=0,
+                         padx=8, pady=6,
+                         wrap=tk.NONE,
+                         state=tk.DISABLED,
+                         yscrollcommand=log_scroll.set)
+    log_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    log_scroll.config(command=log_widget.yview)
+
+    _register_color_tags(log_widget)
+
+    def _center_text(event=None):
+        try:
+            char_width = tkfont.Font(font=log_widget.cget("font")).measure("─")
+            text_px    = char_width * 102
+            available  = log_widget.winfo_width()
+            pad        = max(0, (available - text_px) // 2)
+            log_widget.configure(padx=pad)
+        except Exception:
+            pass
+
+    log_widget.bind("<Configure>", _center_text)
+    root.after(100, _center_text)
+
+    tk.Frame(root, bg=PALETTE["accent"], height=1).pack(fill=tk.X, side=tk.BOTTOM)
+
+    dash = tk.Frame(root, bg=PALETTE["bg_dash"], pady=6, padx=10)
+    dash.pack(fill=tk.X, side=tk.BOTTOM)
+
+    dash.columnconfigure(0, minsize=140)   # Player
+    dash.columnconfigure(1, minsize=180)   # Warframe
+    dash.columnconfigure(2, minsize=60)    # Zones
+    dash.columnconfigure(3, minsize=60)    # Deaths
+    dash.columnconfigure(4, minsize=60)    # Downed
+    dash.columnconfigure(5, minsize=80)    # Neg.Err
+    dash.columnconfigure(6, minsize=80)    # High.Err
+    dash.columnconfigure(7, minsize=80)    # Warnings
+
+    def _lbl(parent, text="", col=0, row=0, fg=None, bold=False, columnspan=1):
+        f = (mono[0], mono[1], "bold") if bold else (mono[0], mono[1])
+        lbl = tk.Label(parent, text=text,
+                       bg=PALETTE["bg_dash"], fg=fg or PALETTE["fg"],
+                       font=f, anchor="w")
+        lbl.grid(row=row, column=col, sticky="w",
+                 padx=(0, 4), pady=1, columnspan=columnspan)
+        return lbl
+
+    # Kopfzeile
+    for col, name in enumerate(["Player", "Warframe", "Zones", "Deaths",
+                                  "Downed", "Neg.Err", "High.Err", "Warnings"]):
+        _lbl(dash, name, col=col, row=0, fg=PALETTE["fg_dim"])
+
+    # Wertezeile
+    dash_labels["player"]   = _lbl(dash, "Unknown", col=0, row=1, fg=_ANSI_RGB_COLORS["249;158;54"], bold=True)
+    dash_labels["warframe"] = _lbl(dash, "Unknown", col=1, row=1)
+    dash_labels["matches"]  = _lbl(dash, "0",       col=2, row=1)
+    dash_labels["deaths"]   = _lbl(dash, "0",       col=3, row=1)
+    dash_labels["downs"]    = _lbl(dash, "0",       col=4, row=1)
+    dash_labels["neg_err"]  = _lbl(dash, "0",       col=5, row=1)
+    dash_labels["high_err"] = _lbl(dash, "0",       col=6, row=1)
+    dash_labels["warn"]     = _lbl(dash, "0",       col=7, row=1)
+
+    # Trennlinie im Dashboard
+    tk.Frame(dash, bg=PALETTE["accent"], height=1
+             ).grid(row=2, column=0, columnspan=8, sticky="ew", pady=(6, 4))
+
+    # Damage Peak + Nemesis Record
+    _lbl(dash, "Session Damage Peak", col=0, row=3, fg=PALETTE["fg_dim"])
+    dash_labels["dmg_peak"]    = _lbl(dash, "0",                col=1, row=3,
+                                      fg=_ANSI_256[121], columnspan=3)
+    _lbl(dash, "Fastest Nemesis Kill", col=4, row=3, fg=PALETTE["fg_dim"])
+    dash_labels["nemesis_rec"] = _lbl(dash, "No Session Record", col=5, row=3,
+                                      fg=_ANSI_256[117], columnspan=3)
 
 
 def startup():
@@ -107,7 +392,8 @@ Maybe you annihilated a flower pot with that 200M crit. Poor Thing...
 Legend: {BOLD_D_GREEN}Zone Damage Record{RESET} - {BOLD_GREEN}Session Damage Record{RESET} - {BOLD_YELLOW}Downed Recorded{RESET} - {BOLD_RED}Death Recorded{RESET}
 
 
-Resizing this window might result in line cabbage. It is recommended to keep it at default.
+Resizing the window vertically is supported. The window can be dragged taller for more log history.
+Horizontal resizing is intentionally disabled — log blocks have a fixed width of 102 characters.
  
  
 """)
@@ -239,7 +525,6 @@ def start_match(line=None, mission_name=None):
     global last_zone_entered
     if current_match["active"]:
         return
-    # Wenn noch ein pending hängt, den aufräumen
     current_match["pending_start"] = False
     current_match["pending_line"] = None
 
@@ -284,70 +569,52 @@ def start_match(line=None, mission_name=None):
 
 
 def get_terminal_width():
-    try:
-        return os.get_terminal_size().columns
-    except OSError:
-        return 120
+    return 120
 
 
 def get_terminal_height():
-    try:
-        return os.get_terminal_size().lines
-    except OSError:
-        return 30
-
-
-def setup_terminal():
-    current_height = get_terminal_height()
-    sys.stdout.write("\033[2J")
-    sys.stdout.write("\033[H")
-    scroll_end = max(1, current_height - 8)
-    sys.stdout.write(f"\033[1;{scroll_end}r")
-    sys.stdout.write("\033[H")
-    sys.stdout.flush()
+    return 40
 
 
 def update_dashboard():
-    height = get_terminal_height()
-    start_row = max(1, height - 7)
-    p_name = global_stats["player_name"]
-    wf = global_stats["warframe"]
-    m_rec = str(global_stats["matches"])
-    d_rec = str(global_stats["deaths"])
-    p_rec = str(global_stats["downs"])
-    n_err = str(global_stats["neg_err"])
-    h_err = str(global_stats["high_err"])
-    h_wrn = str(global_stats["warn"])
-    hi_hit = global_stats["highest_hit_peak"]
-    hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
-    dmg_record_text = f"Session Damage Peak: {NORMAL_GREEN}{hi_hit_str}{RESET}"
-    if global_stats['highest_hit_peak_time'] != None:
-        dmg_record_text = dmg_record_text + f" @{global_stats['highest_hit_peak_time']}"
-    if not global_stats['nemesis_kill_record'] == None:
-        minutes = int(global_stats['nemesis_kill_record'] // 60)
-        seconds = int(global_stats['nemesis_kill_record'] % 60)
-        milliseconds = int((global_stats['nemesis_kill_record'] % 1) * 100000)
-        time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:05d}"
-        nemesis_record_text = time_str
-    else:
-        nemesis_record_text = 'No Session Record'
-    sys.stdout.write(f"\033[{start_row};1H" + f"╔═════════════╦═════════════════════╦══════════════════════╦════════════════════════════════════╗{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+1};1H" + f"║ Player Name ║ {NORMAL_ORANGE}{p_name:<20}{RESET}║ Zones Recorded:  {m_rec:<4}║ Negative Damage Errors: {n_err:<11}║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+2};1H" + f"╠═════════════╬═════════════════════╣ Deaths Recorded: {d_rec:<4}║ Dmg too high Warnings:  {h_err:<11}║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+3};1H" + f"║ Warframe    ║ {wf:<20}║ Downed Recorded: {p_rec:<4}║ High Dmg Warnings:      {h_wrn:<11}║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+4};1H" + f"╠═════════════╩═════════════════════╩═══════════╦══════════╩════════════════════════════════════╣{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+5};1H" + f"║ {dmg_record_text[:62]:<62} ║ Fastest Nemesis Kill: {NORMAL_BLUE}{nemesis_record_text:<23}{RESET} ║{CLEAR_LINE}")
-    sys.stdout.write(f"\033[{start_row+6};1H" + f"╚═══════════════════════════════════════════════╩═══════════════════════════════════════════════╝{CLEAR_LINE}")
-    sys.stdout.flush()
+    """Aktualisiert die Dashboard-Labels (thread-safe via after())."""
+    def _update():
+        hi_hit = global_stats["highest_hit_peak"]
+        hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
+        if global_stats["highest_hit_peak_time"]:
+            hi_hit_str += f"  @{global_stats['highest_hit_peak_time']}"
+        if global_stats["nemesis_kill_record"] is not None:
+            v = global_stats["nemesis_kill_record"]
+            nem_str = f"{int(v//60):02d}:{int(v%60):02d}.{int((v%1)*100000):05d}"
+        else:
+            nem_str = "No Session Record"
+        dash_labels["player"].config(text=global_stats["player_name"])
+        dash_labels["warframe"].config(text=global_stats["warframe"])
+        dash_labels["matches"].config(text=str(global_stats["matches"]))
+        dash_labels["deaths"].config(text=str(global_stats["deaths"]))
+        dash_labels["downs"].config(text=str(global_stats["downs"]))
+        dash_labels["neg_err"].config(text=str(global_stats["neg_err"]))
+        dash_labels["high_err"].config(text=str(global_stats["high_err"]))
+        dash_labels["warn"].config(text=str(global_stats["warn"]))
+        dash_labels["dmg_peak"].config(text=hi_hit_str)
+        dash_labels["nemesis_rec"].config(text=nem_str)
+    if root:
+        root.after(0, _update)
 
 
 def print_scroll_text(text):
-    height = get_terminal_height()
-    scroll_end = max(1, height - 8)
-    lines = text.strip("\n").split("\n")
-    for line in lines:
-        sys.stdout.write(f"\033[{scroll_end};1H\033[2K{line}\n")
-    sys.stdout.flush()
+    """Fügt Text mit ANSI-Farben in das Log-Widget ein (thread-safe).
+    Verarbeitet den gesamten Block auf einmal damit Farbzustand über
+    Zeilenumbrüche hinweg erhalten bleibt."""
+    def _insert():
+        log_widget.configure(state=tk.NORMAL)
+        _insert_ansi(log_widget, text.strip("\n") + "\n")
+        log_widget.configure(state=tk.DISABLED)
+        log_widget.see(tk.END)
+    if root:
+        root.after(0, _insert)
+
+
 
 
 def generate_zone_summary(line: str):
@@ -763,23 +1030,30 @@ def watch_log():
 
 
 def cleanup_terminal():
-    sys.stdout.write("\033[r")
-    sys.stdout.flush()
+    pass  # Kein-Op unter Tkinter
 
 
 if __name__ == "__main__":
-    setup_terminal()
-    update_dashboard()
-    startup()
-    try:
-        watch_log()
-    except Exception as e:
-        import traceback
-        cleanup_terminal()
-        print("\nUNHANDLED EXCEPTION\n")
-        traceback.print_exc()
-        input("\nPress ENTER to exit...")
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cleanup_terminal()
+    build_ui()
+
+    def _run_logic():
+        startup()
+        try:
+            watch_log()
+        except Exception:
+            import traceback
+            def _show_err():
+                log_widget.configure(state=tk.NORMAL)
+                log_widget.insert(tk.END, "\n\nUNHANDLED EXCEPTION\n")
+                log_widget.insert(tk.END, traceback.format_exc())
+                log_widget.configure(state=tk.DISABLED)
+                log_widget.see(tk.END)
+            if root:
+                root.after(0, _show_err)
+        except KeyboardInterrupt:
+            pass
+
+    logic_thread = threading.Thread(target=_run_logic, daemon=True)
+    logic_thread.start()
+
+    root.mainloop()
