@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from datetime import datetime, timedelta
 
-VERSION = '1.1.7 - 15.06.2026'
+VERSION = '1.1.8 - 16.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("   Warframe Log Observer " + str(VERSION))
 
 DEBUG = False
@@ -18,12 +18,6 @@ APPDATA = os.getenv("LOCALAPPDATA")
 LOG_FILE_PATH = os.path.join(APPDATA, "Warframe", "EE.log") if APPDATA else "EE.log"
 
 CLEAR_LINE = "\033[K"
-
-
-# ── Farben ────────────────────────────────────────────────────────────────────
-# ANSI-Codes werden beim Einfügen in das Tkinter-Widget geparst und in Tags
-# umgewandelt. Die Namen bleiben identisch damit der restliche Code unverändert
-# bleibt.
 
 BOLD_RED     = "\033[1;38;5;210m"
 NORMAL_RED   = "\033[0;38;5;210m"
@@ -48,7 +42,6 @@ NORMAL_D_BLUE = "\033[0;38;5;67m"
 
 RESET = "\033[0m"
 
-# ANSI-256 Farbtabelle (nur die hier genutzten Indizes)
 _ANSI_256 = {
     67:  "#5f87af",
     71:  "#5faf5f",
@@ -58,7 +51,6 @@ _ANSI_256 = {
     222: "#ffd787",
 }
 
-# RGB-ANSI → Hex
 _ANSI_RGB_COLORS = {
     "249;158;54": "#f99e36",
 }
@@ -182,8 +174,6 @@ def _register_color_tags(widget):
 
 
 def _insert_ansi(widget, text):
-    """Zerlegt ANSI-gefärbten Text und fügt ihn mit Tkinter-Tags ein.
-    Unterstützt direkt aufeinanderfolgende Farbcodes ohne zwischengeschaltetes RESET."""
     pattern = re.compile(r'(\033\[[^m]*m)')
     parts = pattern.split(text)
     current_tag = None
@@ -204,6 +194,34 @@ def _insert_ansi(widget, text):
                 widget.insert(tk.END, part)
 
 
+def _force_taskbar_visibility(win):
+    """Zwingt ein overrideredirect-Fenster in Taskleiste und Alt-Tab.
+
+    Tkinter setzt bei overrideredirect(True) intern den Extended-Window-Style
+    WS_EX_TOOLWINDOW, was Windows anweist das Fenster aus Taskleiste und
+    Alt-Tab herauszuhalten. Hier wird der Style direkt per Win32-API
+    korrigiert: WS_EX_TOOLWINDOW raus, WS_EX_APPWINDOW rein."""
+    try:
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        if not hwnd:
+            hwnd = win.winfo_id()
+        GWL_EXSTYLE      = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW  = 0x00040000
+
+        get_style = ctypes.windll.user32.GetWindowLongW
+        set_style = ctypes.windll.user32.SetWindowLongW
+
+        style = get_style(hwnd, GWL_EXSTYLE)
+        style = style & ~WS_EX_TOOLWINDOW
+        style = style | WS_EX_APPWINDOW
+        set_style(hwnd, GWL_EXSTYLE, style)
+        win.withdraw()
+        win.after(10, win.deiconify)
+    except Exception:
+        pass
+
+
 def build_ui():
     global root, log_widget, dash_labels
 
@@ -211,22 +229,39 @@ def build_ui():
     root.overrideredirect(True)
     root.configure(bg=PALETTE["bg"])
     root.minsize(MIN_WIDTH_PX, MIN_HEIGHT_PX)
-
+    root.wm_title("Warframe Log Observer " + str(VERSION))
+    _logo_path = None
     try:
         if getattr(sys, 'frozen', False):
             _base = sys._MEIPASS
         else:
             _base = os.path.dirname(os.path.abspath(__file__))
-        _icon_path = os.path.join(_base, "icon.ico")
-        if os.path.exists(_icon_path):
-            root.iconbitmap(_icon_path)
-            _helper = tk.Toplevel(root)
-            _helper.iconbitmap(_icon_path)
-            _helper.withdraw()
-            root.transient(_helper)
-            root.deiconify()
+        _candidate = os.path.join(_base, "logo.png")
+        if os.path.exists(_candidate):
+            _logo_path = _candidate
     except Exception:
-        pass
+        _logo_path = None
+
+    _taskbar_icon_img = None
+    _title_icon_img   = None
+    if _logo_path:
+        try:
+            _full_img = tk.PhotoImage(file=_logo_path)
+            _taskbar_icon_img = _full_img.subsample(6, 6)
+            _title_icon_img   = _full_img.subsample(11, 11)
+            root.wm_iconphoto(True, _taskbar_icon_img)
+        except Exception:
+            _taskbar_icon_img = None
+            _title_icon_img   = None
+
+    root.update_idletasks()
+    _force_taskbar_visibility(root)
+
+    def _on_close():
+        root.destroy()
+
+    def _on_minimize():
+        root.iconify()
 
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -236,19 +271,24 @@ def build_ui():
     title_bar.pack(fill=tk.X, side=tk.TOP)
     title_bar.pack_propagate(False)
 
+    if _title_icon_img:
+        icon_label = tk.Label(title_bar, image=_title_icon_img, bg=PALETTE["bg_title"])
+        icon_label.image = _title_icon_img
+        icon_label.pack(side=tk.LEFT, padx=(8, 0))
+
     tk.Label(title_bar, text="  Warframe Log Observer " + str(VERSION),
              bg=PALETTE["bg_title"], fg=PALETTE["title_text"],
              font=PALETTE["font_ui"], anchor="w"
              ).pack(side=tk.LEFT, padx=(4, 0))
 
-    tk.Button(title_bar, text="✕", command=root.destroy,
+    tk.Button(title_bar, text="✕", command=_on_close,
               bg=PALETTE["bg_title"], fg=PALETTE["btn_close"],
               activebackground=PALETTE["btn_close"], activeforeground="#fff",
               relief=tk.FLAT, bd=0, padx=10, pady=4,
               font=PALETTE["font_ui"], cursor="hand2"
               ).pack(side=tk.RIGHT)
 
-    tk.Button(title_bar, text="─", command=root.iconify,
+    tk.Button(title_bar, text="─", command=_on_minimize,
               bg=PALETTE["bg_title"], fg=PALETTE["btn_min"],
               activebackground=PALETTE["accent"], activeforeground="#fff",
               relief=tk.FLAT, bd=0, padx=10, pady=4,
@@ -306,10 +346,15 @@ def build_ui():
 
     def _center_text(event=None):
         try:
-            char_width = tkfont.Font(font=log_widget.cget("font")).measure("─")
-            text_px    = char_width * 102
+            f = tkfont.Font(font=log_widget.cget("font"))
+            # Eine echte 102-Zeichen-Zeile messen statt ein Einzelzeichen
+            # zu multiplizieren — Multiplikation kann durch Rundung pro
+            # Zeichen leicht von der tatsächlich gerenderten Breite abweichen.
+            sample_line = "─" * 102
+            text_px    = f.measure(sample_line)
+            char_width = f.measure("─")
             available  = log_widget.winfo_width()
-            pad        = max(0, (available - text_px) // 2)
+            pad        = max(0, (available - text_px) // 2) + (char_width * 2)  # +2 Zellen nach rechts
             log_widget.configure(padx=pad)
         except Exception:
             pass
@@ -340,12 +385,10 @@ def build_ui():
                  padx=(0, 4), pady=1, columnspan=columnspan)
         return lbl
 
-    # Kopfzeile
     for col, name in enumerate(["Player", "Warframe", "Zones", "Deaths",
                                   "Downed", "Neg.Err", "High.Err", "Warnings"]):
         _lbl(dash, name, col=col, row=0, fg=PALETTE["fg_dim"])
 
-    # Wertezeile
     dash_labels["player"]   = _lbl(dash, "Unknown", col=0, row=1, fg=_ANSI_RGB_COLORS["249;158;54"], bold=True)
     dash_labels["warframe"] = _lbl(dash, "Unknown", col=1, row=1)
     dash_labels["matches"]  = _lbl(dash, "0",       col=2, row=1)
@@ -355,11 +398,9 @@ def build_ui():
     dash_labels["high_err"] = _lbl(dash, "0",       col=6, row=1)
     dash_labels["warn"]     = _lbl(dash, "0",       col=7, row=1)
 
-    # Trennlinie im Dashboard
     tk.Frame(dash, bg=PALETTE["accent"], height=1
              ).grid(row=2, column=0, columnspan=8, sticky="ew", pady=(6, 4))
 
-    # Damage Peak + Nemesis Record
     _lbl(dash, "Session Damage Peak", col=0, row=3, fg=PALETTE["fg_dim"])
     dash_labels["dmg_peak"]    = _lbl(dash, "0",                col=1, row=3,
                                       fg=_ANSI_256[121], columnspan=3)
@@ -577,7 +618,8 @@ def get_terminal_height():
 
 
 def update_dashboard():
-    """Aktualisiert die Dashboard-Labels (thread-safe via after())."""
+    if initial_log_scan:
+        return
     def _update():
         hi_hit = global_stats["highest_hit_peak"]
         hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else "0"
@@ -603,9 +645,6 @@ def update_dashboard():
 
 
 def print_scroll_text(text):
-    """Fügt Text mit ANSI-Farben in das Log-Widget ein (thread-safe).
-    Verarbeitet den gesamten Block auf einmal damit Farbzustand über
-    Zeilenumbrüche hinweg erhalten bleibt."""
     def _insert():
         log_widget.configure(state=tk.NORMAL)
         _insert_ansi(log_widget, text.strip("\n") + "\n")
@@ -660,6 +699,7 @@ def generate_zone_summary(line: str):
 def process_line(line):
     global current_match, INITIAL_OFFSET, LOG_START_DT, last_zone_entered
     now_str = datetime.now().strftime("%H:%M:%S")
+    debugprint(now_str + ' Line gelesen: ' + str(line))
     line = line.rstrip()
 # 0. SPIELSTART AUFZEICHNEN
     if 'Sys [Diag]: Current time: ' in line:
@@ -794,6 +834,9 @@ def process_line(line):
         update_dashboard()
         return
 
+    if "Sys [Error]: GOT NEGATIVE AMOUNT DAMAGE IN PROCESS TEXT:" in line:
+        if not initial_log_scan: global_stats['neg_err'] += 1
+        debugprint('Negative Error: ' + line)
 
     # 5. KAMPFUNFÄHIG (DOWNED)
     if "Game [Info]:" in line and "was downed by" in line:
@@ -1027,10 +1070,6 @@ def watch_log():
                     update_dashboard()
                     break
                 time.sleep(0.1)
-
-
-def cleanup_terminal():
-    pass  # Kein-Op unter Tkinter
 
 
 if __name__ == "__main__":
