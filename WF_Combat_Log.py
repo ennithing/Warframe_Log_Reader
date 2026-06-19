@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from datetime import datetime, timedelta
 
-VERSION = '1.1.9 - 17.06.2026'
+VERSION = '1.2 - 19.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("   Warframe Combat Log " + str(VERSION))
 
 DEBUG = False
@@ -153,12 +153,12 @@ ALLOWED_CHARS = set(
 )
 
 
-def _get_mono_font():
+def get_mono_font() -> tuple:
     available = tkfont.families()
     name = PALETTE["font_mono"][0] if PALETTE["font_mono"][0] in available else PALETTE["font_mono_fb"][0]
     return (name, PALETTE["font_mono"][1])
 
-def uniform_player_name(name):
+def uniform_player_name(name: str) -> str:
     if not name:
         return name
     if name[-1] not in ALLOWED_CHARS:
@@ -166,7 +166,7 @@ def uniform_player_name(name):
     return name
 
 
-def _register_color_tags(widget):
+def register_color_tags(widget) -> None:
     global _COLOR_TAGS
     all_codes = [
         BOLD_RED, NORMAL_RED, BOLD_GREEN, NORMAL_GREEN,
@@ -174,7 +174,7 @@ def _register_color_tags(widget):
         BOLD_ORANGE, NORMAL_ORANGE, BOLD_BLUE, NORMAL_BLUE,
         BOLD_D_BLUE, NORMAL_D_BLUE,
     ]
-    mono = _get_mono_font()
+    mono = get_mono_font()
     for code in all_codes:
         hex_color = _ansi_to_hex(code)
         if not hex_color:
@@ -187,7 +187,7 @@ def _register_color_tags(widget):
         _COLOR_TAGS[code] = tag
 
 
-def _insert_ansi(widget, text):
+def insert_ansi(widget, text: str) -> None:
     pattern = re.compile(r'(\033\[[^m]*m)')
     parts = pattern.split(text)
     current_tag = None
@@ -208,13 +208,7 @@ def _insert_ansi(widget, text):
                 widget.insert(tk.END, part)
 
 
-def _force_taskbar_visibility(win):
-    """Zwingt ein overrideredirect-Fenster in Taskleiste und Alt-Tab.
-
-    Tkinter setzt bei overrideredirect(True) intern den Extended-Window-Style
-    WS_EX_TOOLWINDOW, was Windows anweist das Fenster aus Taskleiste und
-    Alt-Tab herauszuhalten. Hier wird der Style direkt per Win32-API
-    korrigiert: WS_EX_TOOLWINDOW raus, WS_EX_APPWINDOW rein."""
+def force_taskbar_visibility(win) -> None:
     try:
         hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
         if not hwnd:
@@ -236,7 +230,7 @@ def _force_taskbar_visibility(win):
         pass
 
 
-def build_ui():
+def build_ui() -> None:
     global root, log_widget, dash_labels
 
     root = tk.Tk()
@@ -269,13 +263,16 @@ def build_ui():
             _title_icon_img   = None
 
     root.update_idletasks()
-    _force_taskbar_visibility(root)
+    force_taskbar_visibility(root)
 
     def _on_close():
         root.destroy()
 
     def _on_minimize():
-        root.iconify()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        if not hwnd:
+            hwnd = root.winfo_id()
+        ctypes.windll.user32.ShowWindow(hwnd, 6)
 
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -334,7 +331,7 @@ def build_ui():
     resize_bar.bind("<ButtonPress-1>", _start_resize)
     resize_bar.bind("<B1-Motion>",     _do_resize)
 
-    mono = _get_mono_font()
+    mono = get_mono_font()
 
     log_frame = tk.Frame(root, bg=PALETTE["bg"])
     log_frame.pack(fill=tk.BOTH, expand=True)
@@ -356,7 +353,7 @@ def build_ui():
     log_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     log_scroll.config(command=log_widget.yview)
 
-    _register_color_tags(log_widget)
+    register_color_tags(log_widget)
 
     def _center_text(event=None):
         try:
@@ -383,9 +380,9 @@ def build_ui():
     dash.columnconfigure(2, minsize=60)    # Zones
     dash.columnconfigure(3, minsize=60)    # Deaths
     dash.columnconfigure(4, minsize=60)    # Downed
-    dash.columnconfigure(5, minsize=80)    # Neg.Err
-    dash.columnconfigure(6, minsize=80)    # High.Err
-    dash.columnconfigure(7, minsize=80)    # Warnings
+    dash.columnconfigure(5, minsize=80)    # Warnings
+    dash.columnconfigure(6, minsize=80)    # Neg.Err
+    dash.columnconfigure(7, minsize=80)    # 
 
     def _lbl(parent, text="", col=0, row=0, fg=None, bold=False, columnspan=1):
         f = (mono[0], mono[1], "bold") if bold else (mono[0], mono[1])
@@ -397,7 +394,7 @@ def build_ui():
         return lbl
 
     for col, name in enumerate(["Player", "Warframe", "Zones", "Deaths",
-                                  "Downed", "Neg.Err", "High.Err", "Warnings"]):
+                                  "Downed", "DMG WARNINGS    ", "NEG. ERRORS",]):
         _lbl(dash, name, col=col, row=0, fg=PALETTE["fg_dim"])
 
     dash_labels["player"]   = _lbl(dash, "Unknown", col=0, row=1, fg=_ANSI_RGB_COLORS["249;158;54"], bold=True)
@@ -405,9 +402,8 @@ def build_ui():
     dash_labels["matches"]  = _lbl(dash, "0",       col=2, row=1)
     dash_labels["deaths"]   = _lbl(dash, "0",       col=3, row=1)
     dash_labels["downs"]    = _lbl(dash, "0",       col=4, row=1)
-    dash_labels["neg_err"]  = _lbl(dash, "0",       col=5, row=1)
-    dash_labels["high_err"] = _lbl(dash, "0",       col=6, row=1)
-    dash_labels["warn"]     = _lbl(dash, "0",       col=7, row=1)
+    dash_labels["warn"]  = _lbl(dash, "0",       col=5, row=1)
+    dash_labels["neg_err"] = _lbl(dash, "0",       col=6, row=1)
 
     tk.Frame(dash, bg=PALETTE["accent"], height=1
              ).grid(row=2, column=0, columnspan=8, sticky="ew", pady=(6, 4))
@@ -420,38 +416,32 @@ def build_ui():
                                       fg=_ANSI_256[117], columnspan=3)
 
 
-def startup():
+def startup() -> None:
     print_scroll_text(f"""
 Warframe Combat Log --- © {BOLD_ORANGE}steak_de{RESET} / contact@ennithing.de / Version: {VERSION}
 
-Please be aware that this script is intended for solo mode.
+Please be aware that this program is intended for and tested in solo mode.
 While it works with other players aswell, it is not fully tested and bugs are expected.
 On top of that, the logs vary in detail with more players, with a tendency to display less info.
 
 EE.log gets updated in bulk. If a lot is happening at the same time, it takes a couple seconds
 for Warframe to print new log lines into the log. This results in a feeling of slow readings
-sometimes.
-
-When reading a previous log session, times are being reconstructed through timestamps within 
-the log itself. This results in slightly different times (1-2 seconds offset) in hindsight.
+sometimes. Occasionally, if you kill a nemesis very quickly, the Log puts spawn and kill in the
+same bulk which gets displayed as 0:00:000s kill time. Invalidating an instant kill was not
+my intention so i went with it and 0:00:000 is considered an instant kill.
 
 Hint: Warframe only logs exceptionally high damage numbers. Lower Damage Threshold is around 20
-Million Damage to a single Enemy. Everything below that threshold goes unnoticed.
-Seeing higher ingame numbers than recorded? Might have been a terrain object.
-Maybe you annihilated a flower pot with that 200M crit. Poor Thing...
+Million Damage to a single Enemy. Everything below that threshold goes unnoticed per se.
+Not every damage event gets logged at all times. A lot do, but not each and every single one.
+
 
 
 Legend: {BOLD_D_GREEN}Zone Damage Record{RESET} - {BOLD_GREEN}Session Damage Record{RESET} - {BOLD_YELLOW}Downed Recorded{RESET} - {BOLD_RED}Death Recorded{RESET}
-
-
-Resizing the window vertically is supported. The window can be dragged taller for more log history.
-Horizontal resizing is intentionally disabled — log blocks have a fixed width of 102 characters.
- 
  
 """)
 
 
-def parse_start_time(start_time):
+def parse_start_time(start_time: str) -> str:
     global LOG_START_DT, INITIAL_OFFSET
     explosion = str(start_time).split()
     content = []
@@ -533,7 +523,7 @@ def reconstruct_event_time(line: str) -> str:
         return LOG_START_DT.strftime("%H:%M:%S")
 
 
-def format_damage_value(val_str):
+def format_damage_value(val_str: str) -> float:
     try:
         clean = val_str.replace(",", "").strip()
         if "e" in clean.lower():
@@ -543,12 +533,12 @@ def format_damage_value(val_str):
         return 0.0
 
 
-def clean_player_name(name):
+def clean_player_name(name: str) -> str:
     debugprint('name: ' + str(name) + ' ► ' + str("".join(c for c in name if c.isalnum() or c in "_- ")))
     return "".join(c for c in name if c.isalnum() or c in "_- ")
 
 
-def parse_warframe_name(line):
+def parse_warframe_name(line) -> str:
     ignore_keywords = ["Card", "Augment", "Ability", "Abilities", "Skin", "SuitCustomization", "Operator"]
     if any(keyword in line for keyword in ignore_keywords):
         return None
@@ -570,7 +560,7 @@ def parse_warframe_name(line):
     return "Unknown"
 
 
-def start_match(line=None, mission_name=None):
+def start_match(line=None, mission_name=None) -> None:
     if current_match["active"]:
         return
     debugprint('Neues Match gestartet!')
@@ -620,15 +610,15 @@ def start_match(line=None, mission_name=None):
     print_scroll_text(header)
 
 
-def get_terminal_width():
+def get_terminal_width() -> None:
     return 120
 
 
-def get_terminal_height():
+def get_terminal_height() -> None:
     return 40
 
 
-def update_dashboard():
+def update_dashboard() -> None:
     if initial_log_scan:
         return
     def _update():
@@ -647,7 +637,7 @@ def update_dashboard():
         dash_labels["deaths"].config(text=str(global_stats["deaths"]))
         dash_labels["downs"].config(text=str(global_stats["downs"]))
         dash_labels["neg_err"].config(text=str(global_stats["neg_err"]))
-        dash_labels["high_err"].config(text=str(global_stats["high_err"]))
+        #dash_labels["high_err"].config(text=str(global_stats["high_err"]))
         dash_labels["warn"].config(text=str(global_stats["warn"]))
         dash_labels["dmg_peak"].config(text=hi_hit_str)
         dash_labels["nemesis_rec"].config(text=nem_str)
@@ -655,10 +645,10 @@ def update_dashboard():
         root.after(0, _update)
 
 
-def print_scroll_text(text):
+def print_scroll_text(text) -> None:
     def _insert():
         log_widget.configure(state=tk.NORMAL)
-        _insert_ansi(log_widget, text.strip("\n") + "\n")
+        insert_ansi(log_widget, text.strip("\n") + "\n")
         log_widget.configure(state=tk.DISABLED)
         log_widget.see(tk.END)
     if root:
@@ -667,7 +657,7 @@ def print_scroll_text(text):
 
 
 
-def generate_zone_summary(line: str):
+def generate_zone_summary(line: str) -> str:
     hi_hit = current_match["highest_hit"]
     hi_hit_str = f"{hi_hit:,.0f}".replace(",", ".") if hi_hit > 0 else '0'
     if initial_log_scan:
@@ -707,17 +697,17 @@ def generate_zone_summary(line: str):
     return summary
 
 
-def process_line(line):
+def process_line(line) -> None:
     global current_match, INITIAL_OFFSET, LOG_START_DT, last_zone_entered
     now_str = datetime.now().strftime("%H:%M:%S")
     debugprint(now_str + ' Line gelesen: ' + str(line))
     line = line.rstrip()
+
 # 0. SPIELSTART AUFZEICHNEN
     if 'Sys [Diag]: Current time: ' in line:
         log_start_time = line.split('Sys [Diag]: Current time: ')
         parse_start_time(log_start_time)
         debugprint('Startzeit gelesen: ' + str(log_start_time) + str(' aus line: ') + str(line))
-        
 
 # 1. SPIELERNAME ERKENNEN
     if "Sys [Info]: Logged in " in line:
@@ -731,7 +721,6 @@ def process_line(line):
             update_dashboard()
         return
 
-
 # 2. WARFRAME ERKENNEN
     if "Game [Info]: /Lotus/Powersuits/" in line and current_match['warframe_recognized'] == False:
         detected_frame = parse_warframe_name(line)
@@ -742,7 +731,7 @@ def process_line(line):
             update_dashboard()
         return
 
-# 2.1 MISSION NAME ERKENNEN → aufgeschobenen Start ausführen
+# 2.1 MISSIONSN ERKENNEN
     if "Script [Info]: MissionIntro.lua: MissionName:" in line:
         current_match["mission_name"] = line.split("MissionName:")[-1].strip()
         if current_match.get("pending_start"):
@@ -767,7 +756,6 @@ def process_line(line):
             current_match["pending_start"] = False
             current_match["pending_line"] = None
             return
-        # Kampfzone: Start aufgeschoben bis MissionName bekannt
         current_match["pending_start"] = True
         current_match["pending_line"] = line
         current_match["mission_name"] = None
@@ -775,13 +763,14 @@ def process_line(line):
 
 
     # 4. SCHADENS-REKORDE & FEHLER-COUNTER
-    if "Game [Warning]:  high dmg:" in line:
+    if " high dmg:" in line:
         start_match()
         if not initial_log_scan: global_stats["warn"] += 1
         try:
             parts = line.split("high dmg:")
             if len(parts) > 1:
                 after_high_dmg = parts[1]
+                after_high_dmg = after_high_dmg.split("Vict")[0]
                 dmg_string = after_high_dmg.split(",")[0].strip()
                 val = format_damage_value(dmg_string)
                 
@@ -811,39 +800,7 @@ def process_line(line):
         update_dashboard()
         return
 
-
-    if "Game [Warning]:" in line and "Damage too high:" in line:
-        start_match()
-        if not initial_log_scan: global_stats["high_err"] += 1
-        try:
-            parts = line.split("Damage too high:")
-            if len(parts) > 1:
-                val = format_damage_value(parts[1])
-                now_str = datetime.now().strftime("%H:%M:%S")
-                val_str = f"{val:,.0f}".replace(",", ".")
-                timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
-                output = ""
-                if val > current_match["highest_hit"]:
-                    debugprint('Matchrekord durch "Damage too high": ' + str(val) + ' ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
-                    current_match["highest_hit"] = val
-                    output += f"""{NORMAL_D_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
-# │  {BOLD_D_GREEN}ZONE HIGHSCORE{NORMAL_D_GREEN}  │ {timestamp:<8} │ New Zone Damage Peak: {val_str:<37} │ #
-# └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-                if val > global_stats["highest_hit_peak"]:
-                    debugprint('Sessionrekord durch "Damage too high": ' + str(val) + ' ersetzt alten Wert: ' + str(global_stats['highest_hit_peak']) + '\n# Line: ' + str(line))
-                    global_stats["highest_hit_peak"] = val
-                    global_stats["highest_hit_peak_time"] = datetime.now().strftime("%H:%M:%S")
-                    if output:
-                        output += "\n"
-                    output += f"""{NORMAL_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
-# │  {BOLD_GREEN}SESSION RECORD{NORMAL_GREEN}  │ {timestamp:<8} │ New Session Damage Peak: {val_str:<34} │ #
-# └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
-                if output:
-                    print_scroll_text(output)
-        except Exception as e:
-            debugprint('Fehler in "Damage too high:"-Event: ' + str(e))
-        update_dashboard()
-        return
+#[DAMAGE TOO HIGH leider obsolet seit Update 43]
 
     if "Sys [Error]: GOT NEGATIVE AMOUNT DAMAGE IN PROCESS TEXT:" in line:
         if not initial_log_scan: global_stats['neg_err'] += 1
@@ -913,7 +870,6 @@ def process_line(line):
 # └───────────────────────────────────────────┴───────────────────────────────────────────────┘ #{RESET}"""
         print_scroll_text(box)
         return
-
 
     #6. TOT (KILLED)
     if "Game [Info]:" in line and "was killed by" in line:
@@ -1036,7 +992,7 @@ def process_line(line):
         return
 
 
-def _report_crash(context: str = ""):
+def _report_crash(context: str = "") -> None:
     import traceback
     tb_text = traceback.format_exc()
 
@@ -1047,7 +1003,7 @@ def _report_crash(context: str = ""):
         f"Zeitpunkt: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"Kontext: {context}",
         f"",
-        f"Letzte 5 verarbeitete Match-Stats:",
+        f"Letzte verarbeitete Match-Stats:",
         f"  current_match: {current_match}",
         f"  global_stats:  {global_stats}",
         f"",
@@ -1067,14 +1023,14 @@ def _report_crash(context: str = ""):
     except Exception:
         report_path = None
 
-    short_msg = f"\n{BOLD_RED}# [SYSTEM] Ein Fehler ist aufgetreten und wurde übersprungen.{RESET}"
+    short_msg = f"\n{BOLD_RED}# [SYSTEM] An Error has occured. The Program has crashed.\nTrying to resume operation in 3 Seconds.{RESET}"
     if report_path:
-        short_msg += f"\n{NORMAL_RED}# Crash-Report gespeichert: {report_path}{RESET}"
-    short_msg += f"\n{NORMAL_RED}# Kontext: {context[:150]}{RESET}\n"
+        short_msg += f"\n{NORMAL_RED}# Crash-Report has been saved to: {report_path}{RESET}"
+    short_msg += f"\n{NORMAL_RED}# Context: {context[:150]}{RESET}\n"
     print_scroll_text(short_msg)
 
 
-def watch_log():
+def watch_log() -> None:
     global initial_log_scan
     while True:
         while not os.path.exists(LOG_FILE_PATH):
@@ -1141,8 +1097,8 @@ if __name__ == "__main__":
                 restart_count += 1
                 if restart_count > 5:
                     print_scroll_text(
-                        f"\n{BOLD_RED}# [SYSTEM] Zu viele Abstürze in Folge. Beobachtung wurde gestoppt.{RESET}\n"
-                        f"{NORMAL_RED}# Bitte Crash-Reports im 'crash_reports'-Ordner prüfen.{RESET}\n"
+                        f"\n{BOLD_RED}# [SYSTEM] Too many consecutive crashes. Stopping operation.{RESET}\n"
+                        f"{NORMAL_RED}# A folder named 'crash_reports' was created next to this Program's exe.\nPlease check the crash report inside and send it to me.\nEither on reddit or directly to contact@ennithing.de{RESET}\n"
                     )
                     break
                 time.sleep(2)  # Kurze Pause vor Restart nach Crash
