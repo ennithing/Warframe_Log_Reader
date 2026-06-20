@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from datetime import datetime, timedelta
 
-VERSION = '1.2 - 19.06.2026'
+VERSION = '1.2.1 - 20.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("   Warframe Combat Log " + str(VERSION))
 
 DEBUG = False
@@ -394,7 +394,7 @@ def build_ui() -> None:
         return lbl
 
     for col, name in enumerate(["Player", "Warframe", "Zones", "Deaths",
-                                  "Downed", "DMG WARNINGS    ", "NEG. ERRORS",]):
+                                  "Downed", "Damage Warnings    ", "Neg.Err.",]):
         _lbl(dash, name, col=col, row=0, fg=PALETTE["fg_dim"])
 
     dash_labels["player"]   = _lbl(dash, "Unknown", col=0, row=1, fg=_ANSI_RGB_COLORS["249;158;54"], bold=True)
@@ -491,7 +491,7 @@ def parse_start_time(start_time: str) -> str:
 
     start_time_string = f'{weekday_translation[weekday]}, {day}.{month_translation[month]}.{year} - {clock}'
     uniform_time_str = f'{year}-{month_translation[month]}-{day} {clock}'
-    LOG_START_DT = uniform_time_str    
+    LOG_START_DT = uniform_time_str
     return start_time_string, time_offset
 
 
@@ -501,13 +501,17 @@ def debugprint(print_text: str = None):
         func_name = caller_frame.f_code.co_name
         line_no = caller_frame.f_lineno
         fehlerquelle = f"[{func_name}:L{line_no}]: "
-        print(f"{NORMAL_ORANGE}# {fehlerquelle}{print_text}{RESET}")
+        print(f"{NORMAL_ORANGE if not 'ERROR' in str(print_text).upper() else NORMAL_RED}# {fehlerquelle}{print_text}{RESET}")
 
 
 def reconstruct_event_time(line: str) -> str:
     global LOG_START_DT, INITIAL_OFFSET
     try:
+        line = line.lstrip()
+        if line.startswith('!'):
+            line = line[1:].lstrip()
         relative_seconds = float(line.split(maxsplit=1)[0])
+        debugprint(relative_seconds)
         if INITIAL_OFFSET is not None:
             corrected_seconds = relative_seconds - float(INITIAL_OFFSET)
         else:
@@ -592,7 +596,7 @@ def start_match(line=None, mission_name=None) -> None:
 
     line1_content = f"Zone {current_match['id']}".center(93)
     if line is None:
-        line2_content = (f"Entered: {timestamp}" if not initial_log_scan else "  ----   (Activity Trigger)").center(93)
+        line2_content = (f"Entered: {timestamp}" if not initial_log_scan else "  ---   (Activity Trigger)").center(93)
         header = f"""
 #################################################################################################
 # {line1_content} #
@@ -663,6 +667,8 @@ def generate_zone_summary(line: str) -> str:
     if initial_log_scan:
         try:
             timestamp = reconstruct_event_time(line)
+            if line.startswith('!'):
+                line = line[1:]
             current_seconds = float(line.split(maxsplit=1)[0])
             start_seconds = last_zone_entered if last_zone_entered is not None else current_seconds
             elapsed_seconds = int(current_seconds - start_seconds)
@@ -685,7 +691,7 @@ def generate_zone_summary(line: str) -> str:
     title_content = "Zone Summary:".center(93)
     duration_content = f"Zone left @ {timestamp}    Duration: {duration_str}".center(93)
     summary = f"""#                                                                                               #
-# {NORMAL_ORANGE}{title_content}{RESET} #
+# {title_content} #
 #                                                                                               #
 # {duration_content} #
 #                                                                                               #
@@ -700,7 +706,7 @@ def generate_zone_summary(line: str) -> str:
 def process_line(line) -> None:
     global current_match, INITIAL_OFFSET, LOG_START_DT, last_zone_entered
     now_str = datetime.now().strftime("%H:%M:%S")
-    debugprint(now_str + ' Line gelesen: ' + str(line))
+    #debugprint(now_str + ' Line gelesen: ' + str(line).replace('\n',''))
     line = line.rstrip()
 
 # 0. SPIELSTART AUFZEICHNEN
@@ -779,13 +785,13 @@ def process_line(line) -> None:
                 timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
                 output = ""
                 if val > current_match["highest_hit"]:
-                    debugprint('Matchrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n# Line: ' + str(line))
+                    debugprint('Matchrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n\tLine: ' + str(line))
                     current_match["highest_hit"] = val
                     output += f"""{NORMAL_D_GREEN}# ┌──────────────────┬──────────┬─────────────────────────────────────────────────────────────┐ #
 # │  {BOLD_D_GREEN}ZONE HIGHSCORE{NORMAL_D_GREEN}  │ {timestamp:<8} │ New Zone Damage Peak: {val_str:<37} │ #
 # └──────────────────┴──────────┴─────────────────────────────────────────────────────────────┘ #{RESET}"""
                 if val > global_stats["highest_hit_peak"]:
-                    debugprint('Sessionrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(global_stats['highest_hit_peak']) + '\n# Line: ' + str(line))
+                    debugprint('Sessionrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(global_stats['highest_hit_peak']) + '\n\tLine: ' + str(line))
                     global_stats["highest_hit_peak"] = val
                     global_stats["highest_hit_peak_time"] = datetime.now().strftime("%H:%M:%S")
                     if output:
@@ -813,7 +819,7 @@ def process_line(line) -> None:
         current_match["downs"] += 1
         update_dashboard()
         enemy, level, dmg_inflicted, weapon = "Unknown", "---", "---", "Unknown" 
-        debugprint('Downed-Event\n# Line: ' + str(line))
+        debugprint('Downed-Event\n\tLine: ' + str(line))
         try:
             content = line.split("Game [Info]:")[1].strip()
             rest = content.split("was downed by")[1].strip()
@@ -824,16 +830,18 @@ def process_line(line) -> None:
                 weapon = "Died of Natural Causes"
             if "from" not in rest and "using" in rest:
                 enemy = "Suicide"
-                level = '----'
+                level = '---'
                 weapon = rest.split("using a")[1].strip()
             else:
                 try:
-                    rest2 = rest.split("damage from a level")[1].strip() if 'a level' in str(rest) else rest.split('damage from')[1].strip() if not 'damage from a' in str(rest) else rest.split('damage from a')[1].strip()
+                    rest2 = rest.split("damage from a level")[1].strip() if 'a level' in str(rest) else rest.split('damage from a')[1].strip() if 'damage from a' in str(rest) else rest.split('damage from')[1].strip() if 'damage from' in str(rest) else rest.split('damage')[1].strip()
+                    if len(rest2) < 2:
+                        rest2 = None
                 except IndexError:
                     rest2 = None
                 if not rest2 == None:
                     try:
-                        level = rest2.split()[0].strip() if rest2.split()[0].isnumeric() == True else '----'
+                        level = rest2.split()[0].strip() if rest2.split()[0].isnumeric() == True else '---'
                     except IndexError:
                         level = None
                 enemy_and_weapon = None
@@ -853,18 +861,20 @@ def process_line(line) -> None:
                         weapon = 'Unknown'
             subject = content.split()[0].strip()
             subject_part_two = None
-            if 'Kavat' in content.split()[1].strip() or 'Kubrow' in content.split()[1].strip() or 'Vulpaphyla' in content.split()[1].strip() or 'Sentinel' in content.split()[1].strip():
+            possible_part_two = {'Kubrow', 'Kavat', 'Vulpaphyla', 'Sentinel', 'Warden', 'Defector', 'Eximus'}
+            if content.split()[1].strip() in possible_part_two:
                 try:
                     subject_part_two = content.split()[1].strip()
                 except Exception as e:
-                    print('508: ' + str(e))
+                    debugprint(str(e))
             
             subject_full = subject + ' ' + subject_part_two if subject_part_two != None else subject
+            subject_full = uniform_player_name(subject_full)
         except ValueError as e:
-            debugprint('Error bei downed event\n# Line: ' + str(line) + '\n# ' + str(e))
+            debugprint('Error bei downed event\n\tLine: ' + str(line) + '\n\t' + str(e))
         timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
         box = f"""{NORMAL_YELLOW}# ┌────────┬───────────────────┬─────────── {BOLD_YELLOW}{timestamp}{NORMAL_YELLOW} ────────────────────────┬────────────────┐ #
-# │ {BOLD_YELLOW}DOWNED {NORMAL_YELLOW}│{BOLD_YELLOW} {subject_full[:17].center(16):<17}{NORMAL_YELLOW} │ Enemy: {enemy[:36]:<36} │ Level: {level[:7]:<7} │ #
+# │ {BOLD_YELLOW}DOWNED {NORMAL_YELLOW}│{BOLD_YELLOW} {subject_full[:17].center(16):<17} {NORMAL_YELLOW}│ Enemy: {enemy[:36]:<36} │ Level: {level[:7]:<7} │ #
 # ├────────┴───────────────────┴──────────────┬──────────────────────────────┴────────────────┤ #
 # │ Damage Inflicted: {dmg_inflicted[:23]:<23} │ Damage Source: {weapon[:30]:<30} │ #
 # └───────────────────────────────────────────┴───────────────────────────────────────────────┘ #{RESET}"""
@@ -873,7 +883,7 @@ def process_line(line) -> None:
 
     #6. TOT (KILLED)
     if "Game [Info]:" in line and "was killed by" in line:
-        debugprint('Killed-Event\n# Line: ' + str(line))
+        debugprint('Killed-Event\n\tLine: ' + str(line))
         start_match()
         if not initial_log_scan: global_stats["deaths"] += 1
         current_match["deaths"] += 1
@@ -883,23 +893,50 @@ def process_line(line) -> None:
             subject = content.split()[0].strip()
             
             subject_part_two = None
-            if 'Kavat' in content.split()[1].strip() or 'Kubrow' in content.split()[1].strip() or 'Vulpaphyla' in content.split()[1].strip() or 'Sentinel' in content.split()[1].strip():
+            possible_part_two = {'Kubrow', 'Kavat', 'Vulpaphyla', 'Sentinel', 'Warden', 'Defector', 'Eximus'}
+            if content.split()[1].strip() in possible_part_two:
                 try:
                     subject_part_two = content.split()[1].strip()
                 except Exception as e:
-                    debugprint('# Error bei downed event\n# Line: ' + str(line) + '\n# ' + str(e))
+                    debugprint('# Error bei downed event\n\tLine: ' + str(line) + '\n\t' + str(e))
             subject_full = subject + ' ' + subject_part_two if subject_part_two != None else subject
             subject_full = uniform_player_name(subject_full)
             rest = content.split("was killed by")[1].strip()
-            dmg_inflicted = rest.split("damage from a level")[0].strip() if 'a level' in str(rest) else rest.split('damage from')[0].strip() 
-            rest2 = rest.split("damage from a level")[1].strip() if 'a level' in str(rest) else rest.split('damage from')[1].strip() if not 'damage from a' in str(rest) else rest.split('damage from a')[1].strip()
-            level = rest2.split()[0].strip() if rest2.split()[0].isnumeric() == True else '----'
+            try:
+                if 'damage from a level' in str(rest):
+                    rest2 = rest.split('damage from a level')[1].strip()
+                    dmg_inflicted = rest.split("damage from a level")[0].strip()
+                elif 'damage from a' in str(rest):
+                    rest2 = rest.split('damage from a')[1].strip()
+                    dmg_inflicted = rest.split("damage from a")[0].strip()
+                elif 'damage from' in str(rest):
+                    rest2 = rest.split('damage from')[1].strip()
+                    dmg_inflicted = rest.split("damage from")[0].strip()
+                elif 'damage' in str(rest):
+                    try:
+                        rest2 = rest.split('damage')[1].strip()
+                    except IndexError as e:
+                        debugprint('Erwarteter Fehler bei Kill-Event: Zeile hat nur "XY/XY Damage" ohne weitere Daten:\n\t' + str(e) + '\n\tLine: ' + str(line))
+                        rest2 = None
+                    dmg_inflicted = rest.split("damage")[0].strip()
+            except IndexError:
+                rest2 = None
+                dmg_inflicted = '---'
+            try:
+                level = rest2.split()[0].strip() if rest2.split()[0].isnumeric() == True else '---'
+            except IndexError:
+                debugprint('Kein Rest vorhanden, daher Indexfehler. Setze rest2 = None und level, enemy, weapon auf unbekannt.')
+                rest2 = None
+                level = '---'
+                enemy = 'Unknown'
+                weapon = 'Unknown'
             enemy_and_weapon = None
             if not rest2 == None:
                 try:
-                    enemy_and_weapon = rest2.replace(level if level != '----' and level != None else '----', "", 1).strip()
+                    enemy_and_weapon = rest2.replace(level if level != '---' and level != None else '---', "", 1).strip()
                 except IndexError:
                     enemy_and_weapon = None
+
             if not enemy_and_weapon == None:
                 try:
                     enemy = enemy_and_weapon.split("using a")[0].strip()
@@ -910,12 +947,12 @@ def process_line(line) -> None:
                 except IndexError:
                     weapon = 'Unknown'
         except Exception as e:
-            debugprint('# Error bei killed event\n# Line: ' + str(line) + '\n# ' + str(e))
-            enemy, level, dmg_inflicted, weapon, subject_full = "Unknown", "----", "----", "Unknown", "Unknown"
+            debugprint('# Error bei killed event\n\tLine: ' + str(line) + '\n\t' + str(e))
+            enemy, level, dmg_inflicted, weapon, subject_full = "Unknown", "---", "---", "Unknown", "Unknown"
         enemy = uniform_player_name(enemy)
         timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
         box = f"""{NORMAL_RED}# ┌────────┬───────────────────┬─────────── {BOLD_RED}{timestamp}{NORMAL_RED} ────────────────────────┬────────────────┐ #
-# │{BOLD_RED} KILLED {NORMAL_RED}│{BOLD_RED} {subject_full[:17].center(17):<17} {NORMAL_RED}│ Enemy: {enemy[:36]:<36} │ Level: {level[:7]:<7} │ #
+# │{BOLD_RED} KILLED {NORMAL_RED}│{BOLD_RED} {subject_full[:17].center(16):<17} {NORMAL_RED}│ Enemy: {enemy[:36]:<36} │ Level: {level[:7]:<7} │ #
 # ├────────┴───────────────────┴──────────────┬──────────────────────────────┴────────────────┤ #
 # │ Damage Inflicted: {dmg_inflicted[:23]:<23} │ Damage Source: {weapon[:30]:<30} │ #
 # └───────────────────────────────────────────┴───────────────────────────────────────────────┘ #{RESET}"""
@@ -925,13 +962,13 @@ def process_line(line) -> None:
 
     # 7. NEMESIS EVENTS
     if "persistent enemy" in line and "spawned" in line:
-        debugprint('# Nemesis gespawnt.\n# line: ' + str(line))
+        debugprint('# Nemesis gespawnt.\n\tLine: ' + str(line))
         start_match()
         current_match["nemesis_spawn_time"] = float(line.split(maxsplit=1)[0])
         return
 
     if "persistent enemy" in line and "was killed" in line:
-        debugprint('# Nemesis gestorben.\n# line: ' + str(line))
+        debugprint('# Nemesis gestorben.\n\tLine: ' + str(line))
         start_match()
         current_match["nemesis_kill_time"] = float(line.split(maxsplit=1)[0])
         if not initial_log_scan: global_stats["nemesis_killed_session"] += 1
@@ -1023,10 +1060,10 @@ def _report_crash(context: str = "") -> None:
     except Exception:
         report_path = None
 
-    short_msg = f"\n{BOLD_RED}# [SYSTEM] An Error has occured. The Program has crashed.\nTrying to resume operation in 3 Seconds.{RESET}"
+    short_msg = f"\n{BOLD_RED}# [SYSTEM] An Error has occured. The Program has crashed. It will try to resume operation in 3 Seconds.{RESET}"
     if report_path:
-        short_msg += f"\n{NORMAL_RED}# Crash-Report has been saved to: {report_path}{RESET}"
-    short_msg += f"\n{NORMAL_RED}# Context: {context[:150]}{RESET}\n"
+        short_msg += f"\n{NORMAL_RED}# Crash-Report has been saved to:\n# {report_path}{RESET}"
+    short_msg += f"\n{NORMAL_RED}# Context:\n# {context[:120]}{RESET}\n"
     print_scroll_text(short_msg)
 
 
@@ -1098,10 +1135,11 @@ if __name__ == "__main__":
                 if restart_count > 5:
                     print_scroll_text(
                         f"\n{BOLD_RED}# [SYSTEM] Too many consecutive crashes. Stopping operation.{RESET}\n"
-                        f"{NORMAL_RED}# A folder named 'crash_reports' was created next to this Program's exe.\nPlease check the crash report inside and send it to me.\nEither on reddit or directly to contact@ennithing.de{RESET}\n"
+                        f"{NORMAL_RED}# A folder named 'crash_reports' was created next to this Program's .exe.\nPlease check the crash report inside and send it to me.\nEither on reddit or directly to contact@ennithing.de{RESET}\n"
                     )
                     break
                 time.sleep(2)  # Kurze Pause vor Restart nach Crash
+                print_scroll_text(f'{BOLD_GREEN}# [SYSTEM] Resumed operation...')
             except KeyboardInterrupt:
                 break
 
