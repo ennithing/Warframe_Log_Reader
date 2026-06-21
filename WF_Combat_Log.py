@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from datetime import datetime, timedelta
 
-VERSION = '1.2.1 - 20.06.2026'
+VERSION = '1.2.2 - 21.06.2026'
 ctypes.windll.kernel32.SetConsoleTitleW("   Warframe Combat Log " + str(VERSION))
 
 DEBUG = False
@@ -382,7 +382,7 @@ def build_ui() -> None:
     dash.columnconfigure(4, minsize=60)    # Downed
     dash.columnconfigure(5, minsize=80)    # Warnings
     dash.columnconfigure(6, minsize=80)    # Neg.Err
-    dash.columnconfigure(7, minsize=80)    # 
+    dash.columnconfigure(7, minsize=80)    #
 
     def _lbl(parent, text="", col=0, row=0, fg=None, bold=False, columnspan=1):
         f = (mono[0], mono[1], "bold") if bold else (mono[0], mono[1])
@@ -641,7 +641,6 @@ def update_dashboard() -> None:
         dash_labels["deaths"].config(text=str(global_stats["deaths"]))
         dash_labels["downs"].config(text=str(global_stats["downs"]))
         dash_labels["neg_err"].config(text=str(global_stats["neg_err"]))
-        #dash_labels["high_err"].config(text=str(global_stats["high_err"]))
         dash_labels["warn"].config(text=str(global_stats["warn"]))
         dash_labels["dmg_peak"].config(text=hi_hit_str)
         dash_labels["nemesis_rec"].config(text=nem_str)
@@ -706,7 +705,6 @@ def generate_zone_summary(line: str) -> str:
 def process_line(line) -> None:
     global current_match, INITIAL_OFFSET, LOG_START_DT, last_zone_entered
     now_str = datetime.now().strftime("%H:%M:%S")
-    #debugprint(now_str + ' Line gelesen: ' + str(line).replace('\n',''))
     line = line.rstrip()
 
 # 0. SPIELSTART AUFZEICHNEN
@@ -776,13 +774,14 @@ def process_line(line) -> None:
             parts = line.split("high dmg:")
             if len(parts) > 1:
                 after_high_dmg = parts[1]
-                after_high_dmg = after_high_dmg.split("Vict")[0]
+                after_high_dmg = after_high_dmg.split("V")[0]
                 dmg_string = after_high_dmg.split(",")[0].strip()
                 val = format_damage_value(dmg_string)
                 
                 now_str = datetime.now().strftime("%H:%M:%S")
                 val_str = f"{val:,.0f}".replace(",", ".")
                 timestamp = reconstruct_event_time(line) if initial_log_scan else now_str
+                # High Dmg Event by MagPrime:
                 output = ""
                 if val > current_match["highest_hit"]:
                     debugprint('Matchrekord durch "high dmg:": ' + str(val) + 'ersetzt alten Wert: ' + str(current_match['highest_hit']) + '\n\tLine: ' + str(line))
@@ -806,7 +805,7 @@ def process_line(line) -> None:
         update_dashboard()
         return
 
-#[DAMAGE TOO HIGH leider obsolet seit Update 43]
+#[DAMAGE TOO HIGH leider obsolet seit Update 43] :( R.I.P
 
     if "Sys [Error]: GOT NEGATIVE AMOUNT DAMAGE IN PROCESS TEXT:" in line:
         if not initial_log_scan: global_stats['neg_err'] += 1
@@ -1086,6 +1085,10 @@ def watch_log() -> None:
             while True:
                 current_position = f.tell()
                 line_bytes = f.readline()
+                if line_bytes and not line_bytes.endswith(b"\n"):
+                    f.seek(current_position)
+                    time.sleep(0.1)
+                    continue
                 if line_bytes:
                     line = line_bytes.decode(
                         "utf-8",
